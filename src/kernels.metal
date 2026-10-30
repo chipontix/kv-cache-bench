@@ -202,3 +202,18 @@ kernel void naive_pv(device const float* scores [[buffer(0)]],
     for (int t = 0; t < len; ++t) o += pr[t] * float(v[size_t(t) * D]);
     out[(b * H + h) * D + d] = o;
 }
+
+// ---------------------------------------------------------------------------------------------
+// Read-bandwidth probe: streams a buffer once (grid-stride, float4 loads) as a measured ceiling
+// for the attention kernels. The guarded store is never taken but keeps the loads alive.
+kernel void read_bw(device const float4* src [[buffer(0)]],
+                    device float* sink [[buffer(1)]],
+                    constant uint& n4 [[buffer(2)]],
+                    uint gid [[thread_position_in_grid]],
+                    uint grid [[threads_per_grid]]) {
+    float4 acc = 0.0f;
+    uint i = gid;  // 4 independent loads per iteration keep more requests in flight
+    for (; i + 3 * grid < n4; i += 4 * grid) acc += src[i] + src[i + grid] + src[i + 2 * grid] + src[i + 3 * grid];
+    for (; i < n4; i += grid) acc += src[i];
+    if (acc.x + acc.y + acc.z + acc.w == 1234.5f) sink[gid] = acc.x;
+}

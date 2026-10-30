@@ -181,6 +181,21 @@ double run_naive(const NaiveArgs& a) {
     return finish(cb);
 }
 
+double run_read_bandwidth(const Buffer& src) {
+    constexpr uint32_t kThreads = 1u << 18;
+    const Buffer& sink = workspace(2, kThreads * sizeof(float));
+    const uint32_t n4 = uint32_t(src.size() / 16);
+    id<MTLCommandBuffer> cb = [queue() commandBuffer];
+    id<MTLComputeCommandEncoder> e = [cb computeCommandEncoder];
+    [e setComputePipelineState:pipeline("read_bw", Shape{}, 16, KvType::f32)];
+    [e setBuffer:mtl(&src) offset:0 atIndex:0];
+    [e setBuffer:mtl(&sink) offset:0 atIndex:1];
+    [e setBytes:&n4 length:sizeof n4 atIndex:2];
+    [e dispatchThreads:MTLSizeMake(kThreads, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    return finish(cb);
+}
+
 void flush_gpu_caches() {
     static Buffer scratch(256u << 20);
     id<MTLCommandBuffer> cb = [queue() commandBuffer];

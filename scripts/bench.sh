@@ -1,5 +1,5 @@
 #!/bin/sh
-# Full benchmark sweep. Writes results/<label>/{env.txt,bench.csv,parts.csv,gqa.csv}.
+# Full benchmark sweep. Writes results/<label>/{env.txt,bw.csv,bench.csv,parts.csv,gqa.csv}.
 set -eu
 cd "$(dirname "$0")/.."
 label=${1:-local}
@@ -17,6 +17,7 @@ mkdir -p "$out"
     echo "docker containers running: $(docker ps -q 2>/dev/null | wc -l | tr -d ' ')"
 } > "$out/env.txt"
 cat "$out/env.txt"
+./build/kvbench --bw | tee "$out/bw.csv"
 ./build/kvbench | tee "$out/bench.csv"
 # Split-K partition sweep at one page size (no CPU / naive rows).
 ./build/kvbench --lens=512,2048,8192,32768 --pages=32 --parts=64,128,256,512,1024,2048 --no-cpu --no-naive \

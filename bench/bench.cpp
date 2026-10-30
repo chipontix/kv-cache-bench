@@ -47,7 +47,7 @@ int main(int argc, char** argv) {
     std::vector<int> lens{512, 1024, 2048, 4096, 8192, 16384, 32768}, pages{16, 32, 64, 128}, parts{0};  // part 0 = auto
     std::vector<KvType> types{KvType::f32, KvType::f16};
     int reps = 30, warmup = 3, cpu_reps = 3;
-    bool naive = true, cpu = true, flush = true, per_head = false;
+    bool naive = true, cpu = true, flush = true, per_head = false, bw = false;
     for (int i = 1; i < argc; ++i) {
         const char* a = argv[i];
         auto val = [&](const char* key) -> const char* {
@@ -70,6 +70,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(a, "--no-cpu")) cpu = false;
         else if (!std::strcmp(a, "--no-flush")) flush = false;
         else if (!std::strcmp(a, "--per-head")) per_head = true;  // also time the GQA ablation
+        else if (!std::strcmp(a, "--bw")) bw = true;              // only the read-bandwidth probe
         else {
             std::fprintf(stderr, "unknown argument %s\n", a);
             return 2;
@@ -85,7 +86,6 @@ int main(int argc, char** argv) {
                 "cpu_threads=%d flush=%d simdgroups=%d\n",
                 device_name().c_str(), shape.batch, shape.num_heads, shape.num_kv_heads, shape.head_dim, reps,
                 warmup, cpu_reps, threads, flush, kSimdGroups);
-    std::printf("impl,dtype,batch,seq_len,page,part,reps,median_us,min_us,max_us,gbps,max_diff_vs_naive\n");
 
     auto time_gpu = [&](const std::function<double()>& run) {
         for (int i = 0; i < warmup; ++i) run();
@@ -96,6 +96,16 @@ int main(int argc, char** argv) {
         }
         return stats(t);
     };
+    if (bw) {  // 512 MiB, well past the GPU's last-level cache
+        Buffer src(512u << 20);
+        std::fill_n(src.as<float>(), src.size() / 4, 1.0f);
+        std::printf("impl,bytes,reps,median_us,min_us,max_us,gbps\n");
+        const Stats s = time_gpu([&] { return run_read_bandwidth(src); });
+        std::printf("read_bw,%zu,%d,%.2f,%.2f,%.2f,%.1f\n", src.size(), reps, s.median * 1e3, s.min * 1e3,
+                    s.max * 1e3, double(src.size()) / (s.median * 1e-3) / 1e9);
+        return 0;
+    }
+    std::printf("impl,dtype,batch,seq_len,page,part,reps,median_us,min_us,max_us,gbps,max_diff_vs_naive\n");
     auto row = [&](const char* impl, const Workload& w, int page, int part, int n, Stats s, double diff) {
         std::printf("%s,%s,%d,%d,%d,%d,%d,%.2f,%.2f,%.2f,%.1f,%.3g\n", impl, name(w.type), w.shape.batch, w.max_len,
                     page, part, n, s.median * 1e3, s.min * 1e3, s.max * 1e3, w.min_bytes() / (s.median * 1e-3) / 1e9,

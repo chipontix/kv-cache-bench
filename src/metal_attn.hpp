@@ -79,6 +79,9 @@ struct NaiveArgs {
 double run_paged(const PagedArgs&);
 double run_naive(const NaiveArgs&);
 
+// Reads `src` once with a plain streaming kernel; returns GPU milliseconds.
+double run_read_bandwidth(const Buffer& src);
+
 // Overwrites a 256 MiB scratch buffer on the GPU, to evict the cache from the GPU's last
 // level caches before a timed run (best effort: the cache policy is not documented).
 void flush_gpu_caches();
