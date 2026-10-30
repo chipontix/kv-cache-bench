@@ -39,11 +39,11 @@ id<MTLBuffer> mtl(const Buffer* b) { return (__bridge id<MTLBuffer>)b->handle();
 }
 
 // One library per macro set (head_dim, group, page, type); pipelines cached by name too.
-id<MTLComputePipelineState> pipeline(const char* fn, const Shape& s, int page, KvType t) {
+id<MTLComputePipelineState> pipeline(const char* fn, const Shape& s, int page, KvType t, int qg = 0) {
     static std::map<std::string, id<MTLLibrary>> libs;
     static std::map<std::string, id<MTLComputePipelineState>> pipes;
     const std::string lib_key = std::to_string(s.head_dim) + "/" + std::to_string(s.group()) + "/" +
-                                std::to_string(page) + "/" + name(t);
+                                std::to_string(page) + "/" + name(t) + "/" + std::to_string(qg);
     const std::string key = lib_key + "/" + fn;
     if (auto it = pipes.find(key); it != pipes.end()) return it->second;
 
@@ -58,6 +58,7 @@ id<MTLComputePipelineState> pipeline(const char* fn, const Shape& s, int page, K
             @"PAGE_SIZE" : @(page),
             @"KV_T" : t == KvType::f32 ? @"float" : @"half",
             @"NSIMD" : @(kSimdGroups),
+            @"QG" : @(qg ? qg : s.group()),
         };
         NSError* err = nil;
         lib = [device() newLibraryWithSource:@(kKernelSource) options:opt error:&err];
@@ -118,8 +119,9 @@ double run_paged(const PagedArgs& a) {
     const KernelParams prm{s.num_kv_heads, a.max_blocks, max_parts, part_tokens, a.max_len,
                            1.0f / std::sqrt(float(s.head_dim))};
 
-    id<MTLComputePipelineState> decode = pipeline("paged_decode", s, a.page_size, a.type);
-    id<MTLComputePipelineState> reduce = pipeline("paged_reduce", s, a.page_size, a.type);
+    const int qg = a.share_kv ? s.group() : 1;
+    id<MTLComputePipelineState> decode = pipeline("paged_decode", s, a.page_size, a.type, qg);
+    id<MTLComputePipelineState> reduce = pipeline("paged_reduce", s, a.page_size, a.type, qg);
     id<MTLCommandBuffer> cb = [queue() commandBuffer];
     id<MTLComputeCommandEncoder> e = [cb computeCommandEncoder];  // serial: reduce sees decode's writes
     [e setComputePipelineState:decode];
@@ -131,7 +133,7 @@ double run_paged(const PagedArgs& a) {
     [e setBuffer:mtl(&part_out) offset:0 atIndex:5];
     [e setBuffer:mtl(&part_ml) offset:0 atIndex:6];
     [e setBytes:&prm length:sizeof prm atIndex:7];
-    [e dispatchThreadgroups:MTLSizeMake(max_parts, s.num_kv_heads, s.batch)
+    [e dispatchThreadgroups:MTLSizeMake(max_parts, s.num_heads / qg, s.batch)
         threadsPerThreadgroup:MTLSizeMake(32 * kSimdGroups, 1, 1)];
     [e setComputePipelineState:reduce];
     [e setBuffer:mtl(&part_out) offset:0 atIndex:0];

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Full benchmark sweep. Writes results/<label>/{env.txt,bench.csv,parts.csv}.
+# Full benchmark sweep. Writes results/<label>/{env.txt,bench.csv,parts.csv,gqa.csv}.
 set -eu
 cd "$(dirname "$0")/.."
 label=${1:-local}
@@ -21,4 +21,6 @@ cat "$out/env.txt"
 # Split-K partition sweep at one page size (no CPU / naive rows).
 ./build/kvbench --lens=512,2048,8192,32768 --pages=32 --parts=64,128,256,512,1024,2048 --no-cpu --no-naive \
     | tee "$out/parts.csv"
+# GQA ablation: one threadgroup per KV head (K/V read once per group) vs per query head.
+./build/kvbench --lens=512,2048,8192,32768 --pages=32 --per-head --no-cpu --no-naive | tee "$out/gqa.csv"
 echo "load after: $(uptime | sed 's/.*load averages*: //')" >> "$out/env.txt"

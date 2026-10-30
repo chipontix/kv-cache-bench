@@ -1,13 +1,16 @@
 // Decode-step attention kernels. Compiled at run time by the host (newLibraryWithSource) with
 // these macros: HEAD_DIM (64 or 128), GROUP (query heads per KV head), PAGE_SIZE (tokens per
 // block), KV_T (float or half: the storage type of the K/V cache), NSIMD (simdgroups per
-// threadgroup in paged_decode). Everything is accumulated in fp32, whatever KV_T is.
+// threadgroup in paged_decode), QG (query heads per paged_decode threadgroup: GROUP normally,
+// 1 for the ablation that reads K/V once per query head). Everything is accumulated in fp32,
+// whatever KV_T is.
 #include <metal_stdlib>
 using namespace metal;
 
 constant constexpr int D = HEAD_DIM;
 constant constexpr int G = GROUP;
 constant constexpr int P = PAGE_SIZE;
+static_assert(GROUP % QG == 0, "QG must divide GROUP");
 constant constexpr int DPL = D / 32;  // head-dim elements per SIMD lane
 static_assert(D == 64 || D == 128, "HEAD_DIM must be 64 or 128");
 
@@ -30,9 +33,9 @@ struct Params {
 
 // ---------------------------------------------------------------------------------------------
 // Paged, fused, split-K decode.
-// Grid: (max_parts, Hkv, B) threadgroups of 32*NSIMD threads. A threadgroup owns one KV head
-// and one partition of part_tokens tokens, and serves all G query heads of that KV head, so
-// each K/V row is read once per group. Simdgroup s takes tokens t0+s, t0+s+NSIMD, ...; lane i
+// Grid: (max_parts, H / QG, B) threadgroups of 32*NSIMD threads. A threadgroup owns one
+// partition of part_tokens tokens and QG query heads of one KV head; with QG = G it serves the
+// whole group, so each K/V row is read once per group. Simdgroup s takes tokens t0+s, t0+s+NSIMD, ...; lane i
 // holds head-dim elements [i*DPL, (i+1)*DPL). Each simdgroup keeps an online-softmax state
 // (running max m, running sum l, unnormalized acc) per query head, the threadgroup merges the
 // NSIMD states, and writes the partition's normalized output plus (m, l) for paged_reduce.
@@ -48,18 +51,18 @@ kernel void paged_decode(device const float* q [[buffer(0)]],       // [B][H][D]
                          uint sg [[simdgroup_index_in_threadgroup]],
                          uint lane [[thread_index_in_simdgroup]],
                          uint tid [[thread_index_in_threadgroup]]) {
-    const int part = tg.x, kvh = tg.y, b = tg.z;
+    const int part = tg.x, h0 = tg.y * QG, kvh = h0 / G, b = tg.z;
     const int len = seq_lens[b];
     const int t0 = part * p.part_tokens;
     if (t0 >= len) return;  // uniform over the threadgroup, before any barrier
     const int t1 = min(len, t0 + p.part_tokens);
     const int H = p.num_kv_heads * G;
 
-    f_vec qv[G], acc[G];
-    float m[G], l[G];
-    for (int g = 0; g < G; ++g) {
+    f_vec qv[QG], acc[QG];
+    float m[QG], l[QG];
+    for (int g = 0; g < QG; ++g) {
         // Fold the softmax scale into q once instead of scaling every score.
-        qv[g] = *(device const f_vec*)(q + (b * H + kvh * G + g) * D + lane * DPL) * p.scale;
+        qv[g] = *(device const f_vec*)(q + (b * H + h0 + g) * D + lane * DPL) * p.scale;
         acc[g] = 0.0f;
         m[g] = NEG_BIG;
         l[g] = 0.0f;
@@ -70,7 +73,7 @@ kernel void paged_decode(device const float* q [[buffer(0)]],       // [B][H][D]
         const size_t row = ((size_t(bt[t / P]) * p.num_kv_heads + kvh) * P + t % P) * D + lane * DPL;
         const f_vec k = f_vec(*(device const kv_vec*)(k_cache + row));
         const f_vec v = f_vec(*(device const kv_vec*)(v_cache + row));
-        for (int g = 0; g < G; ++g) {
+        for (int g = 0; g < QG; ++g) {
             const float s = simd_sum(dot(qv[g], k));  // identical in every lane
             const float m_new = max(m[g], s);
             const float corr = exp(m[g] - m_new);     // rescales the old state to the new max
@@ -83,15 +86,15 @@ kernel void paged_decode(device const float* q [[buffer(0)]],       // [B][H][D]
 
     // Merge the NSIMD per-simdgroup states. A simdgroup that got no tokens has m = NEG_BIG,
     // l = 0, acc = 0, and its weight exp(NEG_BIG - M) is 0.
-    threadgroup float tg_acc[NSIMD][G][D];
-    threadgroup float2 tg_ml[NSIMD][G];
-    for (int g = 0; g < G; ++g) {
+    threadgroup float tg_acc[NSIMD][QG][D];
+    threadgroup float2 tg_ml[NSIMD][QG];
+    for (int g = 0; g < QG; ++g) {
         for (int i = 0; i < DPL; ++i) tg_acc[sg][g][lane * DPL + i] = acc[g][i];
         if (lane == 0) tg_ml[sg][g] = float2(m[g], l[g]);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    for (int idx = int(tid); idx < G * D; idx += 32 * NSIMD) {
+    for (int idx = int(tid); idx < QG * D; idx += 32 * NSIMD) {
         const int g = idx / D, d = idx % D;
         float M = NEG_BIG;
         for (int s = 0; s < NSIMD; ++s) M = max(M, tg_ml[s][g].x);
@@ -101,7 +104,7 @@ kernel void paged_decode(device const float* q [[buffer(0)]],       // [B][H][D]
             L += tg_ml[s][g].y * w;
             o += tg_acc[s][g][d] * w;
         }
-        const int slot = (b * H + kvh * G + g) * p.max_parts + part;
+        const int slot = (b * H + h0 + g) * p.max_parts + part;
         part_out[slot * D + d] = o / L;
         if (d == 0) part_ml[slot] = float2(M, L);
     }

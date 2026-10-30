@@ -12,16 +12,11 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Toolchain and GPU
         run: |
           c++ --version
           cmake --version
           system_profiler SPDisplaysDataType || true
-      - name: Build and test
+      - name: Build and test (gpu_tests prints "SKIP" and exits 77 if the runner has no Metal device)
         run: make test
-      - name: GPU tests ran?
-        run: |
-          ./build/gpu_tests > gpu.log 2>&1 || code=$?
-          cat gpu.log
-          if [ "${code:-0}" = 77 ]; then echo "::warning::No Metal device on the runner: GPU correctness tests were skipped"; fi

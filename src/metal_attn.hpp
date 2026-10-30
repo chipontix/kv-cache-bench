@@ -59,6 +59,7 @@ struct PagedArgs {
     const Buffer* block_table;  // int32 [B][max_blocks]
     const Buffer* seq_lens;     // int32 [B]
     const Buffer* out;          // float [B][H][D]
+    bool share_kv = true;       // false: one threadgroup per query head (GQA ablation)
 };
 
 struct NaiveArgs {

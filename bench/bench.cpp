@@ -47,7 +47,7 @@ int main(int argc, char** argv) {
     std::vector<int> lens{512, 1024, 2048, 4096, 8192, 16384, 32768}, pages{16, 32, 64, 128}, parts{0};  // part 0 = auto
     std::vector<KvType> types{KvType::f32, KvType::f16};
     int reps = 30, warmup = 3, cpu_reps = 3;
-    bool naive = true, cpu = true, flush = true;
+    bool naive = true, cpu = true, flush = true, per_head = false;
     for (int i = 1; i < argc; ++i) {
         const char* a = argv[i];
         auto val = [&](const char* key) -> const char* {
@@ -69,6 +69,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(a, "--no-naive")) naive = false;
         else if (!std::strcmp(a, "--no-cpu")) cpu = false;
         else if (!std::strcmp(a, "--no-flush")) flush = false;
+        else if (!std::strcmp(a, "--per-head")) per_head = true;  // also time the GQA ablation
         else {
             std::fprintf(stderr, "unknown argument %s\n", a);
             return 2;
@@ -129,6 +130,13 @@ int main(int argc, char** argv) {
                 for (int part : parts) {
                     const Stats s = time_gpu([&] { return run_paged(cache.args(w, part, out_paged)); });
                     row("gpu_paged", w, page, part ? part : auto_part_tokens(w.shape, w.max_len), reps, s, naive ? max_abs_diff(out_paged, out_naive, n) : NAN);
+                    if (per_head) {
+                        PagedArgs args = cache.args(w, part, out_paged);
+                        args.share_kv = false;
+                        const Stats sp = time_gpu([&] { return run_paged(args); });
+                        row("gpu_paged_per_head", w, page, part ? part : auto_part_tokens(w.shape, w.max_len), reps,
+                            sp, naive ? max_abs_diff(out_paged, out_naive, n) : NAN);
+                    }
                 }
             }
         }

@@ -104,6 +104,17 @@ int main() {
                         if (std::isnan(err)) err = INFINITY;
                         check(err <= kTolKernel, "paged", w.shape, L, type, page, sc.seed, err, kTolKernel);
                         worst[type == KvType::f16] = std::max(worst[type == KvType::f16], err);
+                        if (page == 16 && shape.group() > 1) {  // one threadgroup per query head
+                            PagedArgs args = cache.args(w, sc.part_tokens, out);
+                            args.share_kv = false;
+                            std::fill_n(out.as<float>(), n, NAN);
+                            run_paged(args);
+                            double e = max_abs_diff(out.as<float>(), ref.data(), n);
+                            if (std::isnan(e)) e = INFINITY;
+                            check(e <= kTolKernel, "paged-per-head", w.shape, L, type, page, sc.seed, e, kTolKernel);
+                            std::fill_n(out.as<float>(), n, NAN);
+                            run_paged(cache.args(w, sc.part_tokens, out));
+                        }
                         if (type == KvType::f16) {
                             const double e32 = max_abs_diff(out.as<float>(), ref32.data(), n);
                             check(e32 <= storage_tol, "paged-f16-vs-f32-data", w.shape, L, type, page, sc.seed,
