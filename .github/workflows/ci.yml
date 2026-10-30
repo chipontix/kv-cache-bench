@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    # Apple silicon runner. Performance numbers never come from CI (shared VM); CI checks that
+    # the code builds and that the kernels match the reference wherever a Metal device exists.
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain and GPU
+        run: |
+          c++ --version
+          cmake --version
+          system_profiler SPDisplaysDataType || true
+      - name: Build and test
+        run: make test
+      - name: GPU tests ran?
+        run: |
+          ./build/gpu_tests > gpu.log 2>&1 || code=$?
+          cat gpu.log
+          if [ "${code:-0}" = 77 ]; then echo "::warning::No Metal device on the runner: GPU correctness tests were skipped"; fi
