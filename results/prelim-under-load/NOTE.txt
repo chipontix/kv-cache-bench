@@ -1,0 +1,3 @@
+PRELIMINARY: taken while other workloads (Docker: Kafka, Postgres, Next.js) were running, load average 35-41 (see env.txt).
+Not used for the README numbers. Kept to show the variance under load.
+bench.csv/parts.csv/gqa.csv were produced at commit eb3808f; one-exp-ab.txt is an earlier A/B.

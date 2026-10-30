@@ -69,10 +69,10 @@ kernel void paged_decode(device const float* q [[buffer(0)]],       // [B][H][D]
     }
 
     device const int* bt = block_table + b * p.max_blocks;
-    for (int t = t0 + int(sg); t < t1; t += NSIMD) {
-        const size_t row = ((size_t(bt[t / P]) * p.num_kv_heads + kvh) * P + t % P) * D + lane * DPL;
-        const f_vec k = f_vec(*(device const kv_vec*)(k_cache + row));
-        const f_vec v = f_vec(*(device const kv_vec*)(v_cache + row));
+    auto row_of = [&](int t) {
+        return ((size_t(bt[t / P]) * p.num_kv_heads + kvh) * P + t % P) * D + lane * DPL;
+    };
+    auto update = [&](f_vec k, f_vec v) {
         for (int g = 0; g < QG; ++g) {
             const float s = simd_sum(dot(qv[g], k));  // identical in every lane
             const float m_new = max(m[g], s);
@@ -82,6 +82,21 @@ kernel void paged_decode(device const float* q [[buffer(0)]],       // [B][H][D]
             acc[g] = acc[g] * corr + pr * v;
             m[g] = m_new;
         }
+    };
+    // Two tokens per iteration: all four row loads are issued before the math that needs them.
+    int t = t0 + int(sg);
+    for (; t + NSIMD < t1; t += 2 * NSIMD) {
+        const size_t r0 = row_of(t), r1 = row_of(t + NSIMD);
+        const f_vec k0 = f_vec(*(device const kv_vec*)(k_cache + r0));
+        const f_vec k1 = f_vec(*(device const kv_vec*)(k_cache + r1));
+        const f_vec v0 = f_vec(*(device const kv_vec*)(v_cache + r0));
+        const f_vec v1 = f_vec(*(device const kv_vec*)(v_cache + r1));
+        update(k0, v0);
+        update(k1, v1);
+    }
+    if (t < t1) {
+        const size_t r0 = row_of(t);
+        update(f_vec(*(device const kv_vec*)(k_cache + r0)), f_vec(*(device const kv_vec*)(v_cache + r0)));
     }
 
     // Merge the NSIMD per-simdgroup states. A simdgroup that got no tokens has m = NEG_BIG,
