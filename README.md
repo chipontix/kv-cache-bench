@@ -21,12 +21,12 @@ or other implementations.
 
 | Claim | Evidence |
 |---|---|
-| The paged kernel matches an fp64 reference for fp32 and fp16 storage | `make test`: NUMBERS_TESTS |
-| The tests can tell a broken kernel from a correct one | `make mutation`: 6 injected bugs, each caught ([`scripts/mutation.sh`](scripts/mutation.sh)) |
-| fp16 storage stays within an error bound derived from fp16 rounding | `gpu_tests`, check `paged-f16-vs-f32-data`, worst error is NUMBERS_F16RATIO of the bound |
-| Speed and effective bandwidth vs naive GPU and CPU, 512–32k tokens, pages 16–128 | [Numbers](#numbers), raw CSV in [`results/`](results/) |
-| Sharing one K/V read across a GQA group matters | [GQA ablation](#ablations) |
-| The split-K partition size must follow the context length | [Partition sweep](#ablations) |
+| The paged kernel matches an fp64 reference for fp32 and fp16 storage | `make test`: 7 CPU tests, 540 GPU checks, 0 failed ([`results/make-test.txt`](results/make-test.txt)) |
+| The tests can tell a broken kernel from a correct one | `make mutation`: 6 injected bugs, each caught ([`scripts/mutation.sh`](scripts/mutation.sh), [`results/mutation.txt`](results/mutation.txt)) |
+| fp16 storage stays within an error bound derived from fp16 rounding | `gpu_tests`, check `paged-f16-vs-f32-data`, worst error is 0.087 of the bound |
+| Speed and effective bandwidth vs naive GPU and CPU, 512–32k tokens, pages 16–128 | [Numbers](#numbers) (pending) |
+| Sharing one K/V read across a GQA group matters | [GQA ablation](#ablations) (pending) |
+| The split-K partition size must follow the context length | [Partition sweep](#ablations) (pending) |
 
 CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) builds on a GitHub `macos-15` Apple
 silicon runner and runs both test binaries. The runner exposes an "Apple Paravirtual device",
@@ -100,7 +100,7 @@ element sums `p_t·v_t` over all tokens.
 **Timing.** Each measured run is one command buffer; time is `GPUEndTime − GPUStartTime`
 (GPU execution only: no shader compile, no CPU encode). Before each timed run a 256 MiB blit
 fill evicts the cache data from the GPU's caches (the real decode step reads a layer's KV once
-per token, so cold-cache is the honest case). NUMBERS_METHOD. Effective bandwidth is the
+per token, so cold-cache is the honest case). Each point: 3 warm-up runs, then 30 timed runs, median reported (min and max are in the CSV); the CPU reference: 1 warm-up, 3 timed runs, wall clock. Effective bandwidth is the
 minimum traffic of the step (K and V of every live token, plus q and out) divided by the
 median time; the workspace traffic of split-K is not counted.
 
@@ -130,12 +130,12 @@ median time; the workspace traffic of split-K is not counted.
   sequence into partitions creates enough independent work; the cost is a tiny second kernel and
   a workspace of `B·H·partitions·(D+2)` floats.
 - **One threadgroup per KV head, not per query head.** With GQA, 4 query heads read the same K/V.
-  Serving them from one threadgroup reads K/V once instead of 4 times (the caches do not save the
-  per-head version, see the ablation).
+  Serving them from one threadgroup reads K/V once instead of 4 times; whether the GPU caches
+  would hide the repeated reads is what the GQA ablation measures.
 - **fp32 accumulation for fp16 storage.** fp16 halves the bytes, which is what a bandwidth-bound
   kernel cares about; converting `half4 → float4` in registers is free next to the memory
-  latency. Accumulating in fp16 would lose ~3 decimal digits over a long sequence (one of the
-  mutation tests shows the error grows ~50×).
+  latency. Accumulating in fp16 loses about 3 decimal digits: the fp16-accumulator mutation test
+  gives a maximum error of 1.1e-3, against 1.4e-6 for the real kernel.
 - **fp64 two-pass CPU reference.** The reference must be much more accurate than what it
   checks, and it should share as little as possible with the kernel: different algorithm
   (two-pass, not online), different precision, contiguous layout instead of paged.
@@ -153,9 +153,9 @@ right measure.
    summation, times `scale·Σ|q_d k_d|` (up to ≈ 23 for `q_amp = 8`) gives a score error ~`1e-5`;
    a score error `δ` changes the softmax weights by a factor `e^{±δ}` and the output by `≲ 2δ`.
    Fast-math `exp` and the `p·v` sums add errors of the same order. The observed maximum over
-   all checks is NUMBERS_MAXERR, so the tolerance has margin over the actual rounding noise and is
+   all 540 checks is 1.42e-6 (fp32 storage) and 1.19e-6 (fp16 storage), so the tolerance has margin over the actual rounding noise and is
    still ~50× below the smallest real bug the mutation tests produce (an fp16 accumulator:
-   ≈ `1e-3`).
+   1.1e-3, [`results/mutation.txt`](results/mutation.txt)).
 2. **fp16 storage vs the unrounded fp32 data: a bound derived per test case.** Rounding to fp16
    (unit roundoff `u = 2⁻¹¹`) moves each score by at most `E = u·scale·max_t Σ_d |q_d k_td|`,
    which changes each softmax weight by a factor within `e^{±2E}` after normalization, and moves
@@ -165,27 +165,30 @@ right measure.
 
 ## Numbers
 
-NUMBERS_SECTION
+_Not measured yet: the final sweep runs only on a quiet machine (no other workloads), and has not been run. Preliminary runs under heavy load are kept in [`results/prelim-under-load/`](results/prelim-under-load/) and are not reported here._
 
 ## Ablations
 
-NUMBERS_ABLATIONS
+Two sweeps are part of `make bench`: split-K partition size (64…2048 tokens, page 32) in `parts.csv`, and one threadgroup per KV head vs per query head (`--per-head`) in `gqa.csv`.
+
+_Not measured yet: the final sweep runs only on a quiet machine (no other workloads), and has not been run. Preliminary runs under heavy load are kept in [`results/prelim-under-load/`](results/prelim-under-load/) and are not reported here._
 
 ## What I learned
 
-NUMBERS_LEARNED
+_Written from the final measurements once they exist._
 
 ## Reproduce
 
 ```bash
-make bench LABEL=mine   # ~NUMBERS_BENCHTIME, writes results/mine/{env.txt,bw.csv,bench.csv,parts.csv,gqa.csv}
-./build/kvbench --lens=4096 --pages=16 --types=f16 --reps=50   # one point; ./build/kvbench --help-less flags are in bench.cpp
+make bench LABEL=mine   # writes results/mine/{env.txt,bw.csv,bench.csv,parts.csv,gqa.csv}
+./build/kvbench --lens=4096 --pages=16 --types=f16 --reps=50   # one point; flags are listed in bench/bench.cpp
+python3 scripts/tables.py mine   # the markdown tables used below, from results/mine/
 ```
 
 `env.txt` records the machine (chip, cores, memory, GPU cores from `system_profiler
 SPDisplaysDataType`, macOS) and the load average and number of running Docker containers before
-and after. Peak resident memory of the full sweep is NUMBERS_RSS (largest case: 32k tokens,
-fp32, contiguous + paged copies of a 537 MB cache).
+and after. The largest case (32k tokens, fp32, B = 2) holds a contiguous and a paged copy of a
+512 MiB cache (K + V) plus a 256 MiB flush buffer.
 
 ## Limitations
 

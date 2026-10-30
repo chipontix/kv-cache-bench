@@ -13,8 +13,9 @@ run() {  # $1 = description, $2 = sed expression
     sed -i.tmp "$2" "$src" && rm -f "$src.tmp"
     if cmp -s "$src" "$bak"; then echo "mutation did not apply: $1"; status=1; return; fi
     cmake --build build -j 8 >/dev/null 2>&1
-    out=$(./build/gpu_tests 2>&1 | tail -1)
-    echo "$1: $out"
+    log=$(./build/gpu_tests 2>&1)
+    out=$(echo "$log" | tail -1)
+    echo "$1: $out; $(echo "$log" | grep '^max |gpu')"
     case "$out" in *", 0 failed"*) echo "  NOT CAUGHT"; status=1 ;; esac
 }
 run "no online-softmax rescale (corr = 1)" 's/const float corr = exp(m\[g\] - m_new);/const float corr = 1.0f;/'

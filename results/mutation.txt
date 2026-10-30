@@ -1,0 +1,6 @@
+no online-softmax rescale (corr = 1): 540 checks, 468 failed; max |gpu - ref|: f32 storage 1.13, f16 storage 1.12 (tolerance 2e-05)
+accumulator rounded to fp16 each step: 540 checks, 324 failed; max |gpu - ref|: f32 storage 0.00111, f16 storage 0.00122 (tolerance 2e-05)
+off-by-one row inside a page: 540 checks, 414 failed; max |gpu - ref|: f32 storage 1.53, f16 storage 1.53 (tolerance 2e-05)
+simdgroup merge ignores max shift in L: 540 checks, 468 failed; max |gpu - ref|: f32 storage 0.866, f16 storage 0.866 (tolerance 2e-05)
+reduce drops the last partition: 540 checks, 256 failed; max |gpu - ref|: f32 storage 0.788, f16 storage 0.788 (tolerance 2e-05)
+block table ignored (logical = physical): 540 checks, 468 failed; max |gpu - ref|: f32 storage 1.99, f16 storage 1.99 (tolerance 2e-05)
