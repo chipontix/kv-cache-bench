@@ -21,13 +21,14 @@ public:
     ~Buffer();
     Buffer(const Buffer&) = delete;
     Buffer& operator=(const Buffer&) = delete;
-    void* data() const;
+    void* data() const { return data_; }
     size_t size() const { return bytes_; }
     template <class T> T* as() const { return static_cast<T*>(data()); }
     void* handle() const { return impl_; }
 
 private:
     void* impl_ = nullptr;
+    void* data_ = nullptr;
     size_t bytes_ = 0;
 };
 

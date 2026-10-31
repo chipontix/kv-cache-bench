@@ -120,115 +120,130 @@ double finish(id<MTLCommandBuffer> cb, bool timed = true) {
 bool metal_available() { return device() != nil; }
 std::string device_name() { return device() ? device().name.UTF8String : ""; }
 
+// [MTLBuffer contents] retains and autoreleases the buffer, and a plain C++ main() has no pool
+// to drain it: calling it on every data() leaked every buffer (8 GB peak footprint for the
+// sweep, results/peak-rss.txt). So the pointer is taken once, inside a pool, and cached.
 Buffer::Buffer(size_t bytes) : bytes_(bytes) {
-    id<MTLBuffer> b = [device() newBufferWithLength:std::max<size_t>(bytes, 16)
-                                            options:MTLResourceStorageModeShared];
-    if (!b) throw std::runtime_error("MTLBuffer allocation failed (" + std::to_string(bytes) + " bytes)");
-    impl_ = (__bridge_retained void*)b;
+    @autoreleasepool {
+        id<MTLBuffer> b = [device() newBufferWithLength:std::max<size_t>(bytes, 16)
+                                                options:MTLResourceStorageModeShared];
+        if (!b) throw std::runtime_error("MTLBuffer allocation failed (" + std::to_string(bytes) + " bytes)");
+        impl_ = (__bridge_retained void*)b;
+        data_ = b.contents;
+    }
 }
 
 Buffer::~Buffer() {
-    if (impl_) (void)(__bridge_transfer id<MTLBuffer>)impl_;
+    @autoreleasepool {
+        if (impl_) CFRelease(impl_);  // balances __bridge_retained in the constructor
+    }
 }
 
-void* Buffer::data() const { return [(__bridge id<MTLBuffer>)impl_ contents]; }
 
 double run_paged(const PagedArgs& a) {
-    const Shape& s = a.shape;
-    if (a.part_tokens < 0 || a.max_len <= 0) throw std::invalid_argument("part_tokens < 0 or max_len <= 0");
-    const int part_tokens = a.part_tokens ? a.part_tokens : auto_part_tokens(s, a.max_len);
-    const int max_parts = (a.max_len + part_tokens - 1) / part_tokens;
-    const size_t slots = size_t(s.batch) * s.num_heads * max_parts;
-    const Buffer& part_out = workspace(0, slots * s.head_dim * sizeof(float));
-    const Buffer& part_ml = workspace(1, slots * 2 * sizeof(float));
-    const KernelParams prm{s.num_kv_heads, a.max_blocks, max_parts, part_tokens, a.max_len,
-                           1.0f / std::sqrt(float(s.head_dim))};
+    @autoreleasepool {  // Metal objects are autoreleased; drain them per call
+        const Shape& s = a.shape;
+        if (a.part_tokens < 0 || a.max_len <= 0) throw std::invalid_argument("part_tokens < 0 or max_len <= 0");
+        const int part_tokens = a.part_tokens ? a.part_tokens : auto_part_tokens(s, a.max_len);
+        const int max_parts = (a.max_len + part_tokens - 1) / part_tokens;
+        const size_t slots = size_t(s.batch) * s.num_heads * max_parts;
+        const Buffer& part_out = workspace(0, slots * s.head_dim * sizeof(float));
+        const Buffer& part_ml = workspace(1, slots * 2 * sizeof(float));
+        const KernelParams prm{s.num_kv_heads, a.max_blocks, max_parts, part_tokens, a.max_len,
+                               1.0f / std::sqrt(float(s.head_dim))};
 
-    const int qg = a.share_kv ? s.group() : 1;
-    id<MTLComputePipelineState> decode = pipeline("paged_decode", s, a.page_size, a.type, qg);
-    id<MTLComputePipelineState> reduce = pipeline("paged_reduce", s, a.page_size, a.type, qg);
-    id<MTLCommandBuffer> cb = new_cb();
-    id<MTLComputeCommandEncoder> e = [cb computeCommandEncoder];  // serial: reduce sees decode's writes
-    [e setComputePipelineState:decode];
-    [e setBuffer:mtl(a.q) offset:0 atIndex:0];
-    [e setBuffer:mtl(a.k) offset:0 atIndex:1];
-    [e setBuffer:mtl(a.v) offset:0 atIndex:2];
-    [e setBuffer:mtl(a.block_table) offset:0 atIndex:3];
-    [e setBuffer:mtl(a.seq_lens) offset:0 atIndex:4];
-    [e setBuffer:mtl(&part_out) offset:0 atIndex:5];
-    [e setBuffer:mtl(&part_ml) offset:0 atIndex:6];
-    [e setBytes:&prm length:sizeof prm atIndex:7];
-    [e dispatchThreadgroups:MTLSizeMake(max_parts, s.num_heads / qg, s.batch)
-        threadsPerThreadgroup:MTLSizeMake(32 * kSimdGroups, 1, 1)];
-    [e setComputePipelineState:reduce];
-    [e setBuffer:mtl(&part_out) offset:0 atIndex:0];
-    [e setBuffer:mtl(&part_ml) offset:0 atIndex:1];
-    [e setBuffer:mtl(a.seq_lens) offset:0 atIndex:2];
-    [e setBuffer:mtl(a.out) offset:0 atIndex:3];
-    [e setBytes:&prm length:sizeof prm atIndex:4];
-    [e dispatchThreadgroups:MTLSizeMake(s.num_heads, s.batch, 1)
-        threadsPerThreadgroup:MTLSizeMake(s.head_dim, 1, 1)];
-    [e endEncoding];
-    return finish(cb);
+        const int qg = a.share_kv ? s.group() : 1;
+        id<MTLComputePipelineState> decode = pipeline("paged_decode", s, a.page_size, a.type, qg);
+        id<MTLComputePipelineState> reduce = pipeline("paged_reduce", s, a.page_size, a.type, qg);
+        id<MTLCommandBuffer> cb = new_cb();
+        id<MTLComputeCommandEncoder> e = [cb computeCommandEncoder];  // serial: reduce sees decode's writes
+        [e setComputePipelineState:decode];
+        [e setBuffer:mtl(a.q) offset:0 atIndex:0];
+        [e setBuffer:mtl(a.k) offset:0 atIndex:1];
+        [e setBuffer:mtl(a.v) offset:0 atIndex:2];
+        [e setBuffer:mtl(a.block_table) offset:0 atIndex:3];
+        [e setBuffer:mtl(a.seq_lens) offset:0 atIndex:4];
+        [e setBuffer:mtl(&part_out) offset:0 atIndex:5];
+        [e setBuffer:mtl(&part_ml) offset:0 atIndex:6];
+        [e setBytes:&prm length:sizeof prm atIndex:7];
+        [e dispatchThreadgroups:MTLSizeMake(max_parts, s.num_heads / qg, s.batch)
+            threadsPerThreadgroup:MTLSizeMake(32 * kSimdGroups, 1, 1)];
+        [e setComputePipelineState:reduce];
+        [e setBuffer:mtl(&part_out) offset:0 atIndex:0];
+        [e setBuffer:mtl(&part_ml) offset:0 atIndex:1];
+        [e setBuffer:mtl(a.seq_lens) offset:0 atIndex:2];
+        [e setBuffer:mtl(a.out) offset:0 atIndex:3];
+        [e setBytes:&prm length:sizeof prm atIndex:4];
+        [e dispatchThreadgroups:MTLSizeMake(s.num_heads, s.batch, 1)
+            threadsPerThreadgroup:MTLSizeMake(s.head_dim, 1, 1)];
+        [e endEncoding];
+        return finish(cb);
+    }
 }
 
 double run_naive(const NaiveArgs& a) {
-    const Shape& s = a.shape;
-    const Buffer& scores = workspace(2, size_t(s.batch) * s.num_heads * a.max_len * sizeof(float));
-    const KernelParams prm{s.num_kv_heads, 0, 0, 0, a.max_len, 1.0f / std::sqrt(float(s.head_dim))};
+    @autoreleasepool {  // Metal objects are autoreleased; drain them per call
+        const Shape& s = a.shape;
+        const Buffer& scores = workspace(2, size_t(s.batch) * s.num_heads * a.max_len * sizeof(float));
+        const KernelParams prm{s.num_kv_heads, 0, 0, 0, a.max_len, 1.0f / std::sqrt(float(s.head_dim))};
 
-    id<MTLComputePipelineState> ps_scores = pipeline("naive_scores", s, 16, a.type);
-    id<MTLComputePipelineState> ps_softmax = pipeline("naive_softmax", s, 16, a.type);
-    id<MTLComputePipelineState> ps_pv = pipeline("naive_pv", s, 16, a.type);
-    id<MTLCommandBuffer> cb = new_cb();
-    id<MTLComputeCommandEncoder> e = [cb computeCommandEncoder];
-    [e setComputePipelineState:ps_scores];
-    [e setBuffer:mtl(a.q) offset:0 atIndex:0];
-    [e setBuffer:mtl(a.k) offset:0 atIndex:1];
-    [e setBuffer:mtl(a.seq_lens) offset:0 atIndex:2];
-    [e setBuffer:mtl(&scores) offset:0 atIndex:3];
-    [e setBytes:&prm length:sizeof prm atIndex:4];
-    [e dispatchThreads:MTLSizeMake(a.max_len, s.num_heads, s.batch) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
-    [e setComputePipelineState:ps_softmax];
-    [e setBuffer:mtl(&scores) offset:0 atIndex:0];
-    [e setBuffer:mtl(a.seq_lens) offset:0 atIndex:1];
-    [e setBytes:&prm length:sizeof prm atIndex:2];
-    [e dispatchThreadgroups:MTLSizeMake(s.num_heads, s.batch, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
-    [e setComputePipelineState:ps_pv];
-    [e setBuffer:mtl(&scores) offset:0 atIndex:0];
-    [e setBuffer:mtl(a.v) offset:0 atIndex:1];
-    [e setBuffer:mtl(a.seq_lens) offset:0 atIndex:2];
-    [e setBuffer:mtl(a.out) offset:0 atIndex:3];
-    [e setBytes:&prm length:sizeof prm atIndex:4];
-    [e dispatchThreads:MTLSizeMake(s.head_dim, s.num_heads, s.batch)
-        threadsPerThreadgroup:MTLSizeMake(s.head_dim, 1, 1)];
-    [e endEncoding];
-    return finish(cb);
+        id<MTLComputePipelineState> ps_scores = pipeline("naive_scores", s, 16, a.type);
+        id<MTLComputePipelineState> ps_softmax = pipeline("naive_softmax", s, 16, a.type);
+        id<MTLComputePipelineState> ps_pv = pipeline("naive_pv", s, 16, a.type);
+        id<MTLCommandBuffer> cb = new_cb();
+        id<MTLComputeCommandEncoder> e = [cb computeCommandEncoder];
+        [e setComputePipelineState:ps_scores];
+        [e setBuffer:mtl(a.q) offset:0 atIndex:0];
+        [e setBuffer:mtl(a.k) offset:0 atIndex:1];
+        [e setBuffer:mtl(a.seq_lens) offset:0 atIndex:2];
+        [e setBuffer:mtl(&scores) offset:0 atIndex:3];
+        [e setBytes:&prm length:sizeof prm atIndex:4];
+        [e dispatchThreads:MTLSizeMake(a.max_len, s.num_heads, s.batch) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+        [e setComputePipelineState:ps_softmax];
+        [e setBuffer:mtl(&scores) offset:0 atIndex:0];
+        [e setBuffer:mtl(a.seq_lens) offset:0 atIndex:1];
+        [e setBytes:&prm length:sizeof prm atIndex:2];
+        [e dispatchThreadgroups:MTLSizeMake(s.num_heads, s.batch, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+        [e setComputePipelineState:ps_pv];
+        [e setBuffer:mtl(&scores) offset:0 atIndex:0];
+        [e setBuffer:mtl(a.v) offset:0 atIndex:1];
+        [e setBuffer:mtl(a.seq_lens) offset:0 atIndex:2];
+        [e setBuffer:mtl(a.out) offset:0 atIndex:3];
+        [e setBytes:&prm length:sizeof prm atIndex:4];
+        [e dispatchThreads:MTLSizeMake(s.head_dim, s.num_heads, s.batch)
+            threadsPerThreadgroup:MTLSizeMake(s.head_dim, 1, 1)];
+        [e endEncoding];
+        return finish(cb);
+    }
 }
 
 double run_read_bandwidth(const Buffer& src) {
-    constexpr uint32_t kThreads = 1u << 18;
-    const Buffer& sink = workspace(2, kThreads * sizeof(float));
-    const uint32_t n4 = uint32_t(src.size() / 16);
-    id<MTLCommandBuffer> cb = new_cb();
-    id<MTLComputeCommandEncoder> e = [cb computeCommandEncoder];
-    [e setComputePipelineState:pipeline("read_bw", Shape{}, 16, KvType::f32)];
-    [e setBuffer:mtl(&src) offset:0 atIndex:0];
-    [e setBuffer:mtl(&sink) offset:0 atIndex:1];
-    [e setBytes:&n4 length:sizeof n4 atIndex:2];
-    [e dispatchThreads:MTLSizeMake(kThreads, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
-    [e endEncoding];
-    return finish(cb);
+    @autoreleasepool {  // Metal objects are autoreleased; drain them per call
+        constexpr uint32_t kThreads = 1u << 18;
+        const Buffer& sink = workspace(2, kThreads * sizeof(float));
+        const uint32_t n4 = uint32_t(src.size() / 16);
+        id<MTLCommandBuffer> cb = new_cb();
+        id<MTLComputeCommandEncoder> e = [cb computeCommandEncoder];
+        [e setComputePipelineState:pipeline("read_bw", Shape{}, 16, KvType::f32)];
+        [e setBuffer:mtl(&src) offset:0 atIndex:0];
+        [e setBuffer:mtl(&sink) offset:0 atIndex:1];
+        [e setBytes:&n4 length:sizeof n4 atIndex:2];
+        [e dispatchThreads:MTLSizeMake(kThreads, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+        [e endEncoding];
+        return finish(cb);
+    }
 }
 
 void flush_gpu_caches() {
-    static Buffer scratch(256u << 20);
-    id<MTLCommandBuffer> cb = new_cb();
-    id<MTLBlitCommandEncoder> e = [cb blitCommandEncoder];
-    static uint8_t value = 0;
-    [e fillBuffer:mtl(&scratch) range:NSMakeRange(0, scratch.size()) value:++value];
-    [e endEncoding];
-    finish(cb, false);
+    @autoreleasepool {  // Metal objects are autoreleased; drain them per call
+        static Buffer scratch(256u << 20);
+        id<MTLCommandBuffer> cb = new_cb();
+        id<MTLBlitCommandEncoder> e = [cb blitCommandEncoder];
+        static uint8_t value = 0;
+        [e fillBuffer:mtl(&scratch) range:NSMakeRange(0, scratch.size()) value:++value];
+        [e endEncoding];
+        finish(cb, false);
+    }
 }
 
 void begin_pipelined() {

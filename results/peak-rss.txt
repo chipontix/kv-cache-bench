@@ -1,0 +1,11 @@
+# BEFORE the fix: /usr/bin/time -l ./build/kvbench (full default sweep, output discarded), commit a6d5347
+# load before: 32.72 19.39 11.23
+        6.76 real         5.63 user         1.08 sys
+          8030470144  maximum resident set size
+          8485083400  peak memory footprint
+
+# after the fix (Buffer caches [MTLBuffer contents] inside an autorelease pool), uncommitted tree on top of a6d5347
+# load before: 24.46 20.01 12.65
+        6.85 real         5.56 user         1.01 sys
+          1646919680  maximum resident set size
+          2098612048  peak memory footprint
