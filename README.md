@@ -30,7 +30,8 @@ or other implementations.
 
 CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) builds on a GitHub `macos-15` Apple
 silicon runner and runs both test binaries. The runner exposes an "Apple Paravirtual device",
-and the GPU tests pass on it too. If a runner has no Metal device, `gpu_tests` prints `SKIP`
+and the GPU tests pass on it too
+([`results/ci-log-excerpt.txt`](results/ci-log-excerpt.txt)). If a runner has no Metal device, `gpu_tests` prints `SKIP`
 and exits 77, which CTest reports as skipped. No performance number comes from CI.
 
 ## Run
@@ -173,7 +174,9 @@ right measure.
 
 **Hardware.** Apple M4 Max (MacBook Pro), 16 CPU cores (12 performance + 4 efficiency), 40-core
 GPU (`system_profiler SPDisplaysDataType`, Metal 4), 48 GiB unified memory, macOS 26.6.2 (25G83),
-Apple clang 21.0.0, on AC power in High Power mode (`pmset -g`: `powermode 2`).
+Apple clang 21.0.0, on AC power in High Power mode (`pmset -g`: `powermode 2`), no thermal or
+performance warnings recorded ([`results/hardware.txt`](results/hardware.txt): `system_profiler
+SPHardwareDataType`, `pmset`; `bench.sh` now records the same in every `env.txt`).
 
 **Machine load.** No Docker containers were running, but the machine was not idle: the three
 sweeps below ran at a load average of 24–26, from other sessions' `node` jobs and a headless
@@ -344,8 +347,8 @@ length.
    which is weaker evidence. In both cases the simpler code stayed.
 7. **In Objective-C++ called from a C++ `main`, a getter can leak.** `[MTLBuffer contents]` retains
    and autoreleases the buffer; with no autorelease pool every buffer the CPU had touched stayed alive,
-   and the sweep's peak footprint was 8.5 GB. Taking the pointer once inside `@autoreleasepool` brought it
-   to 2.1 GB (1.6 GB RSS) ([`results/peak-rss.txt`](results/peak-rss.txt)).
+   and the sweep's peak footprint was 8.49 GB. Taking the pointer once inside `@autoreleasepool` brought it
+   to 2.10 GB (1.65 GB RSS), re-measured on commit `f22e3fc` ([`results/peak-rss.txt`](results/peak-rss.txt)).
 8. **The tolerance has to be argued from both sides.** The kernel's real error is 1.42e-6. The
    tolerance (2e-5) is 14× above that and 55× below the error of an fp16 accumulator (1.11e-3 to 1.22e-3), the
    subtlest of the six injected bugs. A tolerance taken from fp16 storage error (~1e-3) would have
@@ -364,7 +367,7 @@ python3 scripts/tables.py mine other   # run-to-run spread between two labels
 SPDisplaysDataType`, macOS) and the load average and number of running Docker containers before
 and after, and the top processes by CPU. The largest case (32k tokens, fp32, B = 2) holds a
 contiguous and a paged copy of a 512 MiB cache (K + V) plus a 256 MiB flush buffer; the peak
-footprint of the whole default sweep is 2.1 GB, 1.6 GB resident
+footprint of the whole default sweep is 2.10 GB, 1.65 GB resident, at commit `f22e3fc`
 ([`results/peak-rss.txt`](results/peak-rss.txt), `/usr/bin/time -l`).
 
 ## Limitations

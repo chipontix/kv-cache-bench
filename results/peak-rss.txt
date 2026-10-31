@@ -4,8 +4,14 @@
           8030470144  maximum resident set size
           8485083400  peak memory footprint
 
-# after the fix (Buffer caches [MTLBuffer contents] inside an autorelease pool), uncommitted tree on top of a6d5347
+# after the fix (Buffer caches [MTLBuffer contents] inside an autorelease pool), measured on an uncommitted tree on top of a6d5347 (the fix itself, committed as 60449f7)
 # load before: 24.46 20.01 12.65
         6.85 real         5.56 user         1.01 sys
           1646919680  maximum resident set size
           2098612048  peak memory footprint
+
+# re-measured on clean HEAD f22e3fc (git status clean), same command
+# load before: 49.57 45.72 29.72
+        7.28 real         4.03 user         0.92 sys
+          1648246784  maximum resident set size
+          2099791720  peak memory footprint
