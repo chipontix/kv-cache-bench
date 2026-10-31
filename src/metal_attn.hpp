@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <string>
+#include <vector>
 
 #include "reference.hpp"
 
@@ -78,6 +79,14 @@ struct NaiveArgs {
 // call for a configuration and is not part of the returned time.
 double run_paged(const PagedArgs&);
 double run_naive(const NaiveArgs&);
+
+// Between begin_pipelined() and end_pipelined(), run_*() and flush_gpu_caches() commit their
+// command buffers without waiting (run_*() return 0), chained by an MTLEvent so they execute one
+// at a time, back to back. end_pipelined() waits and returns the GPU time of every run_*() call
+// in order. This keeps the GPU continuously busy, as in a real decode loop; waiting after each
+// run leaves the SoC idle between bursts and its clocks may drop (README, "What I learned").
+void begin_pipelined();
+std::vector<double> end_pipelined();
 
 // Reads `src` once with a plain streaming kernel; returns GPU milliseconds.
 double run_read_bandwidth(const Buffer& src);

@@ -15,6 +15,8 @@ mkdir -p "$out"
     echo "compiler: $(c++ --version | head -1)"
     echo "load before: $(uptime | sed 's/.*load averages*: //')"
     echo "docker containers running: $(docker ps -q 2>/dev/null | wc -l | tr -d ' ')"
+    echo "top processes by CPU before the run (second sample of top -l 2):"
+    top -l 2 -o cpu -n 6 -stats command,cpu 2>/dev/null | tail -7 | sed 's/^/  /'
 } > "$out/env.txt"
 cat "$out/env.txt"
 ./build/kvbench --bw | tee "$out/bw.csv"
@@ -24,4 +26,8 @@ cat "$out/env.txt"
     | tee "$out/parts.csv"
 # GQA ablation: one threadgroup per KV head (K/V read once per group) vs per query head.
 ./build/kvbench --lens=512,2048,8192,32768 --pages=32 --per-head --no-cpu --no-naive | tee "$out/gqa.csv"
-echo "load after: $(uptime | sed 's/.*load averages*: //')" >> "$out/env.txt"
+{
+    echo "load after: $(uptime | sed 's/.*load averages*: //')"
+    echo "top processes by CPU after the run:"
+    top -l 2 -o cpu -n 6 -stats command,cpu 2>/dev/null | tail -7 | sed 's/^/  /'
+} >> "$out/env.txt"

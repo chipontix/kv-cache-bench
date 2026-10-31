@@ -6,6 +6,7 @@
 #include <map>
 #include <memory>
 #include <stdexcept>
+#include <vector>
 
 #include "kernels_src.inc"  // kKernelSource, generated from kernels.metal by CMake
 
@@ -28,8 +29,26 @@ id<MTLDevice> device() {
 }
 
 id<MTLCommandQueue> queue() {
-    static id<MTLCommandQueue> q = [device() newCommandQueue];
+    static id<MTLCommandQueue> q = [device() newCommandQueueWithMaxCommandBufferCount:512];
     return q;
+}
+
+// Pipelined mode (begin_pipelined / end_pipelined): command buffers are committed without
+// waiting, and each one waits on an event the previous one signals, so they run strictly one
+// after another with no CPU round trip in between.
+bool g_pipelined = false;
+uint64_t g_event_value = 0;
+std::vector<id<MTLCommandBuffer>> g_timed;
+
+id<MTLEvent> event() {
+    static id<MTLEvent> ev = [device() newEvent];
+    return ev;
+}
+
+id<MTLCommandBuffer> new_cb() {
+    id<MTLCommandBuffer> cb = [queue() commandBuffer];
+    if (g_pipelined) [cb encodeWaitForEvent:event() value:g_event_value];
+    return cb;
 }
 
 id<MTLBuffer> mtl(const Buffer* b) { return (__bridge id<MTLBuffer>)b->handle(); }
@@ -83,7 +102,13 @@ const Buffer& workspace(int slot, size_t bytes) {
     return *bufs[slot];
 }
 
-double finish(id<MTLCommandBuffer> cb) {
+double finish(id<MTLCommandBuffer> cb, bool timed = true) {
+    if (g_pipelined) {
+        [cb encodeSignalEvent:event() value:++g_event_value];
+        [cb commit];
+        if (timed) g_timed.push_back(cb);
+        return 0;
+    }
     [cb commit];
     [cb waitUntilCompleted];
     if (cb.status != MTLCommandBufferStatusCompleted) fail("command buffer failed", cb.error);
@@ -122,7 +147,7 @@ double run_paged(const PagedArgs& a) {
     const int qg = a.share_kv ? s.group() : 1;
     id<MTLComputePipelineState> decode = pipeline("paged_decode", s, a.page_size, a.type, qg);
     id<MTLComputePipelineState> reduce = pipeline("paged_reduce", s, a.page_size, a.type, qg);
-    id<MTLCommandBuffer> cb = [queue() commandBuffer];
+    id<MTLCommandBuffer> cb = new_cb();
     id<MTLComputeCommandEncoder> e = [cb computeCommandEncoder];  // serial: reduce sees decode's writes
     [e setComputePipelineState:decode];
     [e setBuffer:mtl(a.q) offset:0 atIndex:0];
@@ -155,7 +180,7 @@ double run_naive(const NaiveArgs& a) {
     id<MTLComputePipelineState> ps_scores = pipeline("naive_scores", s, 16, a.type);
     id<MTLComputePipelineState> ps_softmax = pipeline("naive_softmax", s, 16, a.type);
     id<MTLComputePipelineState> ps_pv = pipeline("naive_pv", s, 16, a.type);
-    id<MTLCommandBuffer> cb = [queue() commandBuffer];
+    id<MTLCommandBuffer> cb = new_cb();
     id<MTLComputeCommandEncoder> e = [cb computeCommandEncoder];
     [e setComputePipelineState:ps_scores];
     [e setBuffer:mtl(a.q) offset:0 atIndex:0];
@@ -185,7 +210,7 @@ double run_read_bandwidth(const Buffer& src) {
     constexpr uint32_t kThreads = 1u << 18;
     const Buffer& sink = workspace(2, kThreads * sizeof(float));
     const uint32_t n4 = uint32_t(src.size() / 16);
-    id<MTLCommandBuffer> cb = [queue() commandBuffer];
+    id<MTLCommandBuffer> cb = new_cb();
     id<MTLComputeCommandEncoder> e = [cb computeCommandEncoder];
     [e setComputePipelineState:pipeline("read_bw", Shape{}, 16, KvType::f32)];
     [e setBuffer:mtl(&src) offset:0 atIndex:0];
@@ -198,12 +223,29 @@ double run_read_bandwidth(const Buffer& src) {
 
 void flush_gpu_caches() {
     static Buffer scratch(256u << 20);
-    id<MTLCommandBuffer> cb = [queue() commandBuffer];
+    id<MTLCommandBuffer> cb = new_cb();
     id<MTLBlitCommandEncoder> e = [cb blitCommandEncoder];
     static uint8_t value = 0;
     [e fillBuffer:mtl(&scratch) range:NSMakeRange(0, scratch.size()) value:++value];
     [e endEncoding];
-    finish(cb);
+    finish(cb, false);
+}
+
+void begin_pipelined() {
+    g_pipelined = true;
+    g_timed.clear();
+}
+
+std::vector<double> end_pipelined() {
+    g_pipelined = false;
+    std::vector<double> ms;
+    for (id<MTLCommandBuffer> cb : g_timed) {
+        [cb waitUntilCompleted];
+        if (cb.status != MTLCommandBufferStatusCompleted) fail("command buffer failed", cb.error);
+        ms.push_back((cb.GPUEndTime - cb.GPUStartTime) * 1e3);
+    }
+    g_timed.clear();
+    return ms;
 }
 
 }  // namespace kvb

@@ -1,0 +1,40 @@
+# Same binary, same points (page 16, auto split-K, 30 reps, 3 warmup, cache flush before each run), 3 alternating rounds.
+# sync: commit + wait for every command buffer. pipelined: all command buffers queued back to back, chained by an MTLEvent.
+# load before: 15.43 9.95 6.82, docker containers: 0
+pipelined,round1,gpu_paged,f32,2,2048,16,64,30,152.44,133.00,195.88,220.5,nan
+pipelined,round1,gpu_paged,f16,2,2048,16,64,30,87.29,83.75,96.50,192.9,nan
+pipelined,round1,gpu_paged,f32,2,8192,16,256,30,377.71,353.04,469.63,355.5,nan
+pipelined,round1,gpu_paged,f16,2,8192,16,256,30,239.13,218.50,422.75,280.9,nan
+pipelined,round1,gpu_paged,f32,2,32768,16,512,30,1240.71,1214.38,1517.79,432.8,nan
+pipelined,round1,gpu_paged,f16,2,32768,16,512,30,656.40,644.62,1457.54,409.1,nan
+sync,round1,gpu_paged,f32,2,2048,16,64,30,185.10,178.33,189.12,181.6,nan
+sync,round1,gpu_paged,f16,2,2048,16,64,30,144.75,143.79,147.83,116.4,nan
+sync,round1,gpu_paged,f32,2,8192,16,256,30,459.52,451.88,521.13,292.2,nan
+sync,round1,gpu_paged,f16,2,8192,16,256,30,408.56,259.50,700.33,164.4,nan
+sync,round1,gpu_paged,f32,2,32768,16,512,30,1224.88,1185.63,1512.54,438.4,nan
+sync,round1,gpu_paged,f16,2,32768,16,512,30,681.50,669.37,971.13,394.0,nan
+pipelined,round2,gpu_paged,f32,2,2048,16,64,30,172.40,159.12,227.54,195.0,nan
+pipelined,round2,gpu_paged,f16,2,2048,16,64,30,102.08,96.63,110.37,165.0,nan
+pipelined,round2,gpu_paged,f32,2,8192,16,256,30,364.44,358.42,383.38,368.5,nan
+pipelined,round2,gpu_paged,f16,2,8192,16,256,30,234.02,212.83,421.83,287.0,nan
+pipelined,round2,gpu_paged,f32,2,32768,16,512,30,1216.35,1175.88,1517.12,441.4,nan
+pipelined,round2,gpu_paged,f16,2,32768,16,512,30,649.10,636.50,1455.62,413.6,nan
+sync,round2,gpu_paged,f32,2,2048,16,64,30,185.17,181.83,191.54,181.6,nan
+sync,round2,gpu_paged,f16,2,2048,16,64,30,144.94,144.00,146.75,116.2,nan
+sync,round2,gpu_paged,f32,2,8192,16,256,30,458.52,453.04,467.58,292.9,nan
+sync,round2,gpu_paged,f16,2,8192,16,256,30,408.73,407.79,416.33,164.3,nan
+sync,round2,gpu_paged,f32,2,32768,16,512,30,1195.65,1178.62,1508.08,449.1,nan
+sync,round2,gpu_paged,f16,2,32768,16,512,30,661.23,644.42,1442.83,406.1,nan
+pipelined,round3,gpu_paged,f32,2,2048,16,64,30,146.60,132.33,202.42,229.3,nan
+pipelined,round3,gpu_paged,f16,2,2048,16,64,30,85.60,83.75,91.12,196.8,nan
+pipelined,round3,gpu_paged,f32,2,8192,16,256,30,376.27,353.33,469.42,356.9,nan
+pipelined,round3,gpu_paged,f16,2,8192,16,256,30,234.50,217.08,423.87,286.5,nan
+pipelined,round3,gpu_paged,f32,2,32768,16,512,30,1217.38,1184.75,1518.25,441.1,nan
+pipelined,round3,gpu_paged,f16,2,32768,16,512,30,684.50,632.71,2110.38,392.3,nan
+sync,round3,gpu_paged,f32,2,2048,16,64,30,132.81,93.71,284.75,253.1,nan
+sync,round3,gpu_paged,f16,2,2048,16,64,30,81.65,64.50,198.25,206.3,nan
+sync,round3,gpu_paged,f32,2,8192,16,256,30,359.98,317.12,676.25,373.0,nan
+sync,round3,gpu_paged,f16,2,8192,16,256,30,216.04,178.08,270.83,310.9,nan
+sync,round3,gpu_paged,f32,2,32768,16,512,30,1293.48,1175.79,1829.46,415.1,nan
+sync,round3,gpu_paged,f16,2,32768,16,512,30,684.79,641.37,1739.63,392.1,nan
+# load after: 15.23 10.00 6.86

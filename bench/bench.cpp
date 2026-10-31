@@ -1,6 +1,7 @@
 // Decode-step benchmark: paged fused kernel vs naive 3-pass GPU kernel vs the CPU reference.
 // Prints CSV to stdout. GPU time is the command buffer's GPUEndTime - GPUStartTime; caches are
-// flushed before every timed run; the median of --reps runs is reported.
+// flushed before every timed run; runs are submitted back to back (begin_pipelined) unless
+// --sync; the median of --reps runs is reported.
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -47,7 +48,7 @@ int main(int argc, char** argv) {
     std::vector<int> lens{512, 1024, 2048, 4096, 8192, 16384, 32768}, pages{16, 32, 64, 128}, parts{0};  // part 0 = auto
     std::vector<KvType> types{KvType::f32, KvType::f16};
     int reps = 30, warmup = 3, cpu_reps = 3;
-    bool naive = true, cpu = true, flush = true, per_head = false, bw = false;
+    bool naive = true, cpu = true, flush = true, per_head = false, bw = false, sync = false;
     for (int i = 1; i < argc; ++i) {
         const char* a = argv[i];
         auto val = [&](const char* key) -> const char* {
@@ -71,6 +72,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(a, "--no-flush")) flush = false;
         else if (!std::strcmp(a, "--per-head")) per_head = true;  // also time the GQA ablation
         else if (!std::strcmp(a, "--bw")) bw = true;              // only the read-bandwidth probe
+        else if (!std::strcmp(a, "--sync")) sync = true;          // wait after every run (not pipelined)
         else {
             std::fprintf(stderr, "unknown argument %s\n", a);
             return 2;
@@ -83,17 +85,28 @@ int main(int argc, char** argv) {
     const int threads = int(std::max(1u, std::thread::hardware_concurrency()));
 
     std::printf("# device=%s batch=%d heads=%d kv_heads=%d head_dim=%d reps=%d warmup=%d cpu_reps=%d "
-                "cpu_threads=%d flush=%d simdgroups=%d\n",
+                "cpu_threads=%d flush=%d simdgroups=%d timing=%s\n",
                 device_name().c_str(), shape.batch, shape.num_heads, shape.num_kv_heads, shape.head_dim, reps,
-                warmup, cpu_reps, threads, flush, kSimdGroups);
+                warmup, cpu_reps, threads, flush, kSimdGroups, sync ? "sync" : "pipelined");
 
     auto time_gpu = [&](const std::function<double()>& run) {
+        if (sync) {  // the earlier method: wait for every command buffer
+            for (int i = 0; i < warmup; ++i) run();
+            std::vector<double> t;
+            for (int i = 0; i < reps; ++i) {
+                if (flush) flush_gpu_caches();
+                t.push_back(run());
+            }
+            return stats(t);
+        }
+        begin_pipelined();
         for (int i = 0; i < warmup; ++i) run();
-        std::vector<double> t;
         for (int i = 0; i < reps; ++i) {
             if (flush) flush_gpu_caches();
-            t.push_back(run());
+            run();
         }
+        std::vector<double> t = end_pipelined();
+        t.erase(t.begin(), t.begin() + warmup);
         return stats(t);
     };
     if (bw) {  // 512 MiB, well past the GPU's last-level cache
