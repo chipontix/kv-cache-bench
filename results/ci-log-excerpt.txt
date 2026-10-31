@@ -1,0 +1,19 @@
+# Excerpt of the GitHub Actions log, run 41178591711 (commit 7f359f6, runner macos-15), from: gh run view 41178591711 --log
+# Kept lines: runner image, toolchain, Metal device and test summaries; job/step columns and timestamps removed.
+Image: macos-15-arm64
+Apple clang version 17.0.0 (clang-1700.0.13.5)
+cmake version 4.4.4
+build/cpu_tests
+ok   zero query gives the mean of V
+ok   a dominant key selects its V row
+ok   huge scores stay finite (max-shifted softmax)
+ok   query heads 0 and 1 share KV head 0
+ok   block table maps logical blocks onto distinct physical blocks
+ok   paged scatter round-trips through paged_index
+ok   fp16 storage reference differs from fp32 only by rounding
+7 passed, 0 failed
+build/gpu_tests || [ $? -eq 77 ]
+device: Apple Paravirtual device
+max |gpu - ref|: f32 storage 1.45e-06, f16 storage 1.13e-06 (tolerance 2e-05)
+f16 storage vs fp32 data: worst error / derived bound = 0.087
+540 checks, 0 failed

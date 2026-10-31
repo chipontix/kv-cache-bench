@@ -1,4 +1,4 @@
-# A/B: paged_decode one token per simdgroup iteration (base) vs two tokens per iteration (unroll2). Difference within noise (<= 2% of the median); base kept as the simpler code.
+# A/B: paged_decode one token per simdgroup iteration (base) vs two tokens per iteration (unroll2). Medians of the two variants differ by at most 2.1% per point, single rounds of one point span up to 21%: no gain detected; base kept as the simpler code.
 # 5 interleaved rounds; each: kvbench --lens=2048,8192,32768 --pages=16 --no-cpu --no-naive (pipelined timing, 30 reps, 3 warmup, flush)
 # load before: 13.93 9.96 6.90, docker containers: 0
 base,round1,gpu_paged,f32,2,2048,16,64,30,178.19,117.92,1455.33,188.7,nan

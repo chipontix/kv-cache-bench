@@ -13,6 +13,8 @@ mkdir -p "$out"
     echo "memory: $(( $(sysctl -n hw.memsize) / 1073741824 )) GiB"
     system_profiler SPDisplaysDataType | grep -E 'Chipset Model|Total Number of Cores|Metal Support' | sed 's/^ */gpu /'
     echo "compiler: $(c++ --version | head -1)"
+    echo "model: $(system_profiler SPHardwareDataType 2>/dev/null | sed -n 's/^ *Model Name: //p')"
+    echo "power: $(pmset -g batt | head -1 | sed "s/Now drawing from //; s/'//g"), $(pmset -g | grep -E '^ *powermode' | sed 's/^ *//; s/  */ /g')"
     echo "load before: $(uptime | sed 's/.*load averages*: //')"
     echo "docker containers running: $(docker ps -q 2>/dev/null | wc -l | tr -d ' ')"
     echo "top processes by CPU before the run (second sample of top -l 2):"

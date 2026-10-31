@@ -140,7 +140,8 @@ median time; the workspace traffic of split-K is not counted.
 - **fp32 accumulation for fp16 storage.** fp16 halves the bytes, which is what a bandwidth-bound
   kernel cares about; converting `half4 → float4` in registers is free next to the memory
   latency. Accumulating in fp16 loses about 3 decimal digits: the fp16-accumulator mutation test
-  gives a maximum error of 1.1e-3, against 1.4e-6 for the real kernel.
+  gives a maximum error of 1.11e-3 (fp32 storage) and 1.22e-3 (fp16 storage), against 1.42e-6
+  for the real kernel.
 - **fp64 two-pass CPU reference.** The reference must be much more accurate than what it
   checks, and it should share as little as possible with the kernel: different algorithm
   (two-pass, not online), different precision, contiguous layout instead of paged.
@@ -155,12 +156,12 @@ right measure.
    fp16 → fp32 conversion is exact, so with fp16 storage the kernel and the reference see the same
    numbers and the only error is the kernel's fp32 arithmetic. A first-order estimate: an fp32 dot
    product of length 128 has relative error up to about `log2(128)·2⁻²⁴ ≈ 4e-7` with tree-like
-   summation, times `scale·Σ|q_d k_d|` (up to ≈ 23 for `q_amp = 8`) gives a score error ~`1e-5`;
+   summation, times `scale·Σ|q_d k_d|` (typically ≈ 23 for `q_amp = 8`; the worst case is `128·8/√128 ≈ 90.5`) gives a score error ~`1e-5`;
    a score error `δ` changes the softmax weights by a factor `e^{±δ}` and the output by `≲ 2δ`.
    Fast-math `exp` and the `p·v` sums add errors of the same order. The observed maximum over
    all 540 checks is 1.42e-6 (fp32 storage) and 1.19e-6 (fp16 storage), so the tolerance has margin over the actual rounding noise and is
    still 55× below the smallest real bug the mutation tests produce (an fp16 accumulator:
-   1.1e-3, [`results/mutation.txt`](results/mutation.txt)).
+   up to 1.22e-3, [`results/mutation.txt`](results/mutation.txt)).
 2. **fp16 storage vs the unrounded fp32 data: a bound derived per test case.** Rounding to fp16
    (unit roundoff `u = 2⁻¹¹`) moves each score by at most `E = u·scale·max_t Σ_d |q_d k_td|`,
    which changes each softmax weight by a factor within `e^{±2E}` after normalization, and moves
@@ -287,8 +288,8 @@ Both sweeps are part of `make bench` (`parts.csv`, `gqa.csv`), run 1 shown, page
 | f16 | 32k | 284 | 351 | **386** | 376 | 343 | 294 |
 
 Bold is the best partition for that row. The default (`auto_part_tokens`: 64 for ≤ 2k tokens, 256 at
-8k, 512 at 32k for this shape) is the best or within 6% of the best in every row except fp16 at 2k
-(161 vs 184 GB/s, 12% short): the "at least 512 threadgroups" rule is a heuristic, not tuned per
+8k, 512 at 32k for this shape) is the best or within 6.3% of the best in every row except fp16 at 2k
+(161.2 vs 184.5 GB/s, 13% short): the "at least 512 threadgroups" rule is a heuristic, not tuned per
 length.
 
 **GQA ablation, page 32: one threadgroup per KV head (4 query heads) vs per query head**
@@ -314,7 +315,7 @@ length.
    cannot overlap, gave 234–239 µs in every round. The GPU-side time of one command buffer depends on how busy the SoC was before it,
    so a benchmark must keep the GPU fed the way the real decode loop does.
 2. **At long context the paged kernel streams K/V about as fast as a plain read kernel can read
-   memory.** At 32k tokens, fp32: 415–431 GB/s across page sizes, against 430–438 GB/s for the
+   memory.** At 32k tokens, fp32: 415–431 GB/s across page sizes, against 429.8–438.0 GB/s for the
    streaming-read probe in the three runs. The block-table indirection costs nothing measurable: at
    every point the slowest and fastest page size differ by at most 4.9%, within the run-to-run spread.
    Even a 16-token page is 16 contiguous rows of 512 bytes (fp32), and the table entries are cached.
@@ -334,16 +335,19 @@ length.
    no gain (0.97–0.99×) at 512 and 2k. My reading, not verified with counters: with a short sequence
    the four threadgroups of a group read the same rows at about the same time and hit in cache, while at
    32k the extra 4× traffic reaches DRAM.
-6. **Arithmetic tweaks do nothing in a memory-bound kernel.** One `exp` per token instead of two (under
-   load, [`results/prelim-under-load/one-exp-ab.txt`](results/prelim-under-load/one-exp-ab.txt)) and two
-   tokens per loop iteration ([`results/unroll-ab/ab.txt`](results/unroll-ab/ab.txt), 5 interleaved
-   rounds at load 12–14: medians within 2%) did not change the time, so the simpler code stayed.
+6. **Arithmetic tweaks showed no gain in a memory-bound kernel.** Two tokens per loop iteration
+   ([`results/unroll-ab/ab.txt`](results/unroll-ab/ab.txt), 5 interleaved rounds at load 12–14): the
+   medians of the two variants differ by at most 2.1% at every point, while single rounds of one
+   point span up to 21%, so no gain was detected. One `exp` per token instead of two
+   ([`results/prelim-under-load/one-exp-ab.txt`](results/prelim-under-load/one-exp-ab.txt)) was only
+   measured under load 35–41, where paired runs differ by up to 19%: no gain detected there either,
+   which is weaker evidence. In both cases the simpler code stayed.
 7. **In Objective-C++ called from a C++ `main`, a getter can leak.** `[MTLBuffer contents]` retains
    and autoreleases the buffer; with no autorelease pool every buffer the CPU had touched stayed alive,
    and the sweep's peak footprint was 8.5 GB. Taking the pointer once inside `@autoreleasepool` brought it
    to 2.1 GB (1.6 GB RSS) ([`results/peak-rss.txt`](results/peak-rss.txt)).
 8. **The tolerance has to be argued from both sides.** The kernel's real error is 1.42e-6. The
-   tolerance (2e-5) is 14× above that and 55× below the error of an fp16 accumulator (1.1e-3), the
+   tolerance (2e-5) is 14× above that and 55× below the error of an fp16 accumulator (1.11e-3 to 1.22e-3), the
    subtlest of the six injected bugs. A tolerance taken from fp16 storage error (~1e-3) would have
    passed that bug.
 

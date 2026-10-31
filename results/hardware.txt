@@ -1,0 +1,16 @@
+# Hardware and power settings, captured 2026-10-31T07:00:35Z, after the m4max-run* sweeps (same machine, same session).
+# system_profiler SPHardwareDataType (model, chip, cores, memory lines):
+  Model Name: MacBook Pro
+  Model Identifier: Mac16,5
+  Chip: Apple M4 Max
+  Total Number of Cores: 16 (12 Performance and 4 Efficiency)
+  Memory: 48 GB
+# pmset -g batt (first two lines):
+  Now drawing from 'AC Power'
+   -InternalBattery-0 	100%; charged; 0:00 remaining present: true
+# pmset -g, powermode line (0 = automatic, 1 = low power, 2 = high power):
+  powermode            2
+# pmset -g therm:
+  Note: No thermal warning level has been recorded
+  Note: No performance warning level has been recorded
+  Note: No CPU power status has been recorded
