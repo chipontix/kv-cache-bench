@@ -24,9 +24,9 @@ or other implementations.
 | The paged kernel matches an fp64 reference for fp32 and fp16 storage | `make test`: 7 CPU tests, 540 GPU checks, 0 failed ([`results/make-test.txt`](results/make-test.txt)) |
 | The tests can tell a broken kernel from a correct one | `make mutation`: 6 injected bugs, each caught ([`scripts/mutation.sh`](scripts/mutation.sh), [`results/mutation.txt`](results/mutation.txt)) |
 | fp16 storage stays within an error bound derived from fp16 rounding | `gpu_tests`, check `paged-f16-vs-f32-data`, worst error is 0.087 of the bound |
-| Speed and effective bandwidth vs naive GPU and CPU, 512–32k tokens, pages 16–128 | [Numbers](#numbers) (pending) |
-| Sharing one K/V read across a GQA group matters | [GQA ablation](#ablations) (pending) |
-| The split-K partition size must follow the context length | [Partition sweep](#ablations) (pending) |
+| Speed and effective bandwidth vs naive GPU and CPU, 512–32k tokens, pages 16–128 | [Numbers](#numbers), 3 full runs, raw CSV in [`results/`](results/) |
+| Sharing one K/V read across a GQA group matters at long context only | [GQA ablation](#ablations): 1.49× at 32k, none at ≤ 2k |
+| The split-K partition size must follow the context length | [Partition sweep](#ablations): 1.9× at 512 tokens |
 
 CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) builds on a GitHub `macos-15` Apple
 silicon runner and runs both test binaries. The runner exposes an "Apple Paravirtual device",
@@ -159,7 +159,7 @@ right measure.
    a score error `δ` changes the softmax weights by a factor `e^{±δ}` and the output by `≲ 2δ`.
    Fast-math `exp` and the `p·v` sums add errors of the same order. The observed maximum over
    all 540 checks is 1.42e-6 (fp32 storage) and 1.19e-6 (fp16 storage), so the tolerance has margin over the actual rounding noise and is
-   still ~50× below the smallest real bug the mutation tests produce (an fp16 accumulator:
+   still 55× below the smallest real bug the mutation tests produce (an fp16 accumulator:
    1.1e-3, [`results/mutation.txt`](results/mutation.txt)).
 2. **fp16 storage vs the unrounded fp32 data: a bound derived per test case.** Rounding to fp16
    (unit roundoff `u = 2⁻¹¹`) moves each score by at most `E = u·scale·max_t Σ_d |q_d k_td|`,
@@ -170,33 +170,205 @@ right measure.
 
 ## Numbers
 
-_Not measured yet: the final sweep runs only on a quiet machine (no other workloads), and has not been run. Preliminary runs under heavy load are kept in [`results/prelim-under-load/`](results/prelim-under-load/) and are not reported here._
+**Hardware.** Apple M4 Max (MacBook Pro), 16 CPU cores (12 performance + 4 efficiency), 40-core
+GPU (`system_profiler SPDisplaysDataType`, Metal 4), 48 GiB unified memory, macOS 26.6.2 (25G83),
+Apple clang 21.0.0, on AC power in High Power mode (`pmset -g`: `powermode 2`).
+
+**Machine load.** No Docker containers were running, but the machine was not idle: the three
+sweeps below ran at a load average of 24–26, from other sessions' `node` jobs and a headless
+Chrome (single processes up to 560% CPU in `top`; each run's `env.txt` records `uptime` and the
+top processes before and after). GPU medians repeat within a few percent ([spread](#run-to-run-spread) below); the
+16-thread CPU reference competes with those processes for cores and its times are the least
+reliable numbers here.
+
+**Workload.** B = 2 sequences of equal length, H = 32 query heads, Hkv = 8 KV heads, D = 128
+(a Llama-3-8B-like layer), q ~ U(−3, 3), K, V ~ U(−1, 1). Command: `make bench LABEL=m4max-run1`
+at commit `60449f7`; tables rendered with `python3 scripts/tables.py m4max-run1`. Raw output:
+[`results/m4max-run1/`](results/m4max-run1/), repeats in [`m4max-run2`](results/m4max-run2/) and
+[`m4max-run3`](results/m4max-run3/). Every paged and CPU result agrees with the naive GPU output
+to 2.24e-7 or better (last CSV column).
+
+**Read-bandwidth probe** (`kvbench --bw`, a plain streaming read of 512 MiB): 438.0 GB/s in
+run 1 (435.8 and 429.8 in runs 2 and 3).
+
+**Paged kernel, f32 cache: median µs (effective GB/s)**
+
+| tokens | split-K part | page 16 | page 32 | page 64 | page 128 |
+|---:|---:|---:|---:|---:|---:|
+| 512 | 64 | 57.2 (148) | 55.0 (154) | 56.5 (150) | 55.6 (152) |
+| 1k | 64 | 94.3 (178) | 95.5 (176) | 96.3 (175) | 96.3 (175) |
+| 2k | 64 | 151.7 (222) | 152.1 (221) | 152.7 (220) | 151.7 (222) |
+| 4k | 128 | 225.8 (298) | 224.5 (299) | 224.5 (299) | 224.6 (299) |
+| 8k | 256 | 380.5 (353) | 384.1 (350) | 382.9 (351) | 381.2 (352) |
+| 16k | 512 | 685.8 (392) | 693.0 (388) | 702.0 (382) | 688.3 (390) |
+| 32k | 512 | 1294.9 (415) | 1246.9 (431) | 1276.6 (421) | 1267.7 (424) |
+
+**Paged kernel, f16 cache: median µs (effective GB/s)**
+
+| tokens | split-K part | page 16 | page 32 | page 64 | page 128 |
+|---:|---:|---:|---:|---:|---:|
+| 512 | 64 | 41.4 (103) | 41.6 (102) | 40.8 (104) | 40.9 (104) |
+| 1k | 64 | 65.2 (130) | 64.9 (130) | 65.0 (130) | 64.6 (131) |
+| 2k | 64 | 100.5 (168) | 100.5 (168) | 101.3 (166) | 100.2 (168) |
+| 4k | 128 | 160.0 (210) | 158.8 (212) | 160.6 (209) | 164.3 (205) |
+| 8k | 256 | 248.9 (270) | 244.5 (275) | 247.7 (271) | 246.3 (273) |
+| 16k | 512 | 407.2 (330) | 412.2 (326) | 415.7 (323) | 411.5 (326) |
+| 32k | 512 | 698.2 (384) | 703.4 (382) | 705.5 (381) | 704.0 (381) |
+
+**Against the baselines, f32 cache (paged = page 16)**
+
+| tokens | CPU fp64, ms | naive GPU, µs | paged GPU, µs | GB/s naive / paged | paged vs naive | paged vs CPU |
+|---:|---:|---:|---:|---:|---:|---:|
+| 512 | 0.50 | 199.2 | 57.2 | 42 / 148 | 3.5× | 9× |
+| 1k | 0.78 | 367.6 | 94.3 | 46 / 178 | 3.9× | 8× |
+| 2k | 1.82 | 709.1 | 151.7 | 47 / 222 | 4.7× | 12× |
+| 4k | 3.20 | 1355.0 | 225.8 | 50 / 298 | 6.0× | 14× |
+| 8k | 8.59 | 2670.5 | 380.5 | 50 / 353 | 7.0× | 23× |
+| 16k | 15.81 | 5184.2 | 685.8 | 52 / 392 | 7.6× | 23× |
+| 32k | 22.35 | 10185.5 | 1294.9 | 53 / 415 | 7.9× | 17× |
+
+**Against the baselines, f16 cache (paged = page 16)**
+
+| tokens | CPU fp64, ms | naive GPU, µs | paged GPU, µs | GB/s naive / paged | paged vs naive | paged vs CPU |
+|---:|---:|---:|---:|---:|---:|---:|
+| 512 | 0.44 | 181.5 | 41.4 | 24 / 103 | 4.4× | 11× |
+| 1k | 0.92 | 338.6 | 65.2 | 25 / 130 | 5.2× | 14× |
+| 2k | 1.98 | 656.8 | 100.5 | 26 / 168 | 6.5× | 20× |
+| 4k | 4.76 | 1282.1 | 160.0 | 26 / 210 | 8.0× | 30× |
+| 8k | 11.78 | 2501.4 | 248.9 | 27 / 270 | 10.0× | 47× |
+| 16k | 15.74 | 4829.4 | 407.2 | 28 / 330 | 11.9× | 39× |
+| 32k | 34.32 | 9889.1 | 698.2 | 27 / 384 | 14.2× | 49× |
+
+"GB/s" is the minimum traffic of the step divided by the median time. "paged vs CPU" uses the
+fp64 16-thread reference, written for accuracy, not speed, and measured while other processes
+took several cores.
+
+### Run-to-run spread
+
+**Run-to-run spread, m4max-run1 vs m4max-run2: |a − b| / mean of the two medians**
+
+| file | impl | points | median spread | max spread | worst point |
+|---|---|---:|---:|---:|---|
+| bench.csv | gpu_naive | 14 | 2.1% | 5.3% | f32 16k page 0 part 0: 5184.2 vs 5468.2 µs |
+| bench.csv | cpu_ref_fp64 | 14 | 24.6% | 47.7% | f16 16k page 0 part 0: 15738.9 vs 25592.5 µs |
+| bench.csv | gpu_paged | 56 | 1.3% | 4.8% | f16 16k page 16 part 512: 407.2 vs 427.2 µs |
+| parts.csv | gpu_paged | 48 | 3.7% | 13.1% | f16 32k page 32 part 64: 946.3 vs 830.3 µs |
+| gqa.csv | gpu_paged | 8 | 3.6% | 6.8% | f32 512 page 32 part 64: 58.5 vs 54.6 µs |
+| gqa.csv | gpu_paged_per_head | 8 | 1.9% | 4.2% | f16 512 page 32 part 64: 41.7 vs 40.0 µs |
+| bw.csv | read_bw | 1 | 0.5% | | |
+
+| bench.csv | gpu_naive | 14 | 2.1% | 4.0% | f32 16k page 0 part 0: 5184.2 vs 5396.4 µs |
+| bench.csv | cpu_ref_fp64 | 14 | 21.0% | 50.9% | f32 4k page 0 part 0: 3203.2 vs 5388.8 µs |
+| bench.csv | gpu_paged | 56 | 1.2% | 4.0% | f32 4k page 32 part 128: 224.5 vs 233.8 µs |
+| parts.csv | gpu_paged | 48 | 0.9% | 10.6% | f16 32k page 32 part 64: 946.3 vs 851.4 µs |
+| gqa.csv | gpu_paged | 8 | 1.8% | 3.2% | f32 32k page 32 part 512: 1256.3 vs 1296.6 µs |
+| gqa.csv | gpu_paged_per_head | 8 | 1.7% | 4.5% | f16 512 page 32 part 64: 41.7 vs 39.9 µs |
+| bw.csv | read_bw | 1 | 1.9% | | |
+
+The second table is run 1 vs run 3 (same columns). GPU medians move 1–4% between full sweeps,
+the worst single point 13%; the CPU reference moves 21–25% (median) because it competes with
+other processes for cores.
 
 ## Ablations
 
-Two sweeps are part of `make bench`: split-K partition size (64…2048 tokens, page 32) in `parts.csv`, and one threadgroup per KV head vs per query head (`--per-head`) in `gqa.csv`.
+Both sweeps are part of `make bench` (`parts.csv`, `gqa.csv`), run 1 shown, page 32.
 
-_Not measured yet: the final sweep runs only on a quiet machine (no other workloads), and has not been run. Preliminary runs under heavy load are kept in [`results/prelim-under-load/`](results/prelim-under-load/) and are not reported here._
+**Split-K partition sweep, page 32: effective GB/s**
+
+| dtype | tokens | part 64 | part 128 | part 256 | part 512 | part 1024 | part 2048 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| f32 | 512 | **149** | 147 | 123 | 80 | 80 | 80 |
+| f32 | 2k | 220 | 209 | **234** | 228 | 160 | 92 |
+| f32 | 8k | 335 | 350 | 343 | 316 | **364** | 314 |
+| f32 | 32k | 373 | 404 | 411 | **415** | 404 | 362 |
+| f16 | 512 | **102** | 95 | 68 | 44 | 44 | 44 |
+| f16 | 2k | 161 | 157 | **184** | 144 | 88 | 49 |
+| f16 | 8k | 262 | **278** | 265 | 232 | 273 | 176 |
+| f16 | 32k | 284 | 351 | **386** | 376 | 343 | 294 |
+
+Bold is the best partition for that row. The default (`auto_part_tokens`: 64 for ≤ 2k tokens, 256 at
+8k, 512 at 32k for this shape) is the best or within 6% of the best in every row except fp16 at 2k
+(161 vs 184 GB/s, 12% short): the "at least 512 threadgroups" rule is a heuristic, not tuned per
+length.
+
+**GQA ablation, page 32: one threadgroup per KV head (4 query heads) vs per query head**
+
+| dtype | tokens | per KV head, µs | per query head, µs | slowdown | GB/s per KV head / per query head |
+|---|---:|---:|---:|---:|---:|
+| f32 | 512 | 58.5 | 58.1 | 0.99× | 144 / 145 |
+| f32 | 2k | 155.4 | 153.2 | 0.99× | 216 / 220 |
+| f32 | 8k | 391.6 | 423.4 | 1.08× | 343 / 317 |
+| f32 | 32k | 1256.3 | 1876.7 | 1.49× | 427 / 286 |
+| f16 | 512 | 42.9 | 41.7 | 0.97× | 99 / 102 |
+| f16 | 2k | 103.0 | 101.6 | 0.99× | 164 / 166 |
+| f16 | 8k | 245.2 | 264.8 | 1.08× | 274 / 254 |
+| f16 | 32k | 696.7 | 794.7 | 1.14× | 385 / 338 |
 
 ## What I learned
 
-_Written from the final measurements once they exist._
+1. **Measuring the GPU one run at a time measured the power state, not the kernel.** With the first
+   method (commit, wait, read `GPUEndTime − GPUStartTime`, repeat), the same binary at the same point
+   gave two stable answers about 2× apart: 408 µs or 216 µs for fp16 at 8k tokens, depending on the
+   round ([`results/timing-method/sync-vs-pipelined.txt`](results/timing-method/sync-vs-pipelined.txt),
+   load 15). Submitting the flush and kernel command buffers back to back, event-chained so they
+   cannot overlap, gave 234–239 µs in every round. The GPU-side time of one command buffer depends on how busy the SoC was before it,
+   so a benchmark must keep the GPU fed the way the real decode loop does.
+2. **At long context the paged kernel streams K/V about as fast as a plain read kernel can read
+   memory.** At 32k tokens, fp32: 415–431 GB/s across page sizes, against 430–438 GB/s for the
+   streaming-read probe in the three runs. The block-table indirection costs nothing measurable: at
+   every point the slowest and fastest page size differ by at most 4.9%, within the run-to-run spread.
+   Even a 16-token page is 16 contiguous rows of 512 bytes (fp32), and the table entries are cached.
+3. **fp16 storage halves bytes but only helps a kernel that is bound by bytes.** Paged: 1294.9 →
+   698.2 µs at 32k (1.85×). Naive: 10185.5 → 9889.1 µs (3% less), and the naive kernel reaches
+   only 42–53 GB/s (fp32) or 24–28 GB/s (fp16). It is limited by its strided per-thread loads and three
+   passes, not by bandwidth, so cheaper data does not make it faster. That is why the gap between paged
+   and naive grows from 3.5–4.4× at 512 tokens to 7.9× (fp32) and 14.2× (fp16) at 32k.
+4. **Short contexts are limited by parallelism and fixed costs, not by bandwidth.** At 512 tokens
+   the paged kernel reaches 148 GB/s (fp32), and fp16 saves only 28% of the time (57.2 → 41.4 µs)
+   for 50% fewer bytes. With partitions of 512 tokens, a 512-token sequence is a single
+   threadgroup per KV head (16 in all for 40 GPU cores) and runs at 80 GB/s; partitions of 64
+   tokens give 149 GB/s. Long contexts want the opposite: at 32k, partitions of 64 tokens
+   lose 10% to the extra merge work against 512. Hence a partition size that depends on the length.
+5. **Sharing K/V across a GQA group only pays off when the cache is long.** One threadgroup per KV head
+   (4 query heads) vs one per query head: 1.49× faster at 32k (fp32), 1.14× (fp16), 1.08× at 8k, and
+   no gain (0.97–0.99×) at 512 and 2k. My reading, not verified with counters: with a short sequence
+   the four threadgroups of a group read the same rows at about the same time and hit in cache, while at
+   32k the extra 4× traffic reaches DRAM.
+6. **Arithmetic tweaks do nothing in a memory-bound kernel.** One `exp` per token instead of two (under
+   load, [`results/prelim-under-load/one-exp-ab.txt`](results/prelim-under-load/one-exp-ab.txt)) and two
+   tokens per loop iteration ([`results/unroll-ab/ab.txt`](results/unroll-ab/ab.txt), 5 interleaved
+   rounds at load 12–14: medians within 2%) did not change the time, so the simpler code stayed.
+7. **In Objective-C++ called from a C++ `main`, a getter can leak.** `[MTLBuffer contents]` retains
+   and autoreleases the buffer; with no autorelease pool every buffer the CPU had touched stayed alive,
+   and the sweep's peak footprint was 8.5 GB. Taking the pointer once inside `@autoreleasepool` brought it
+   to 2.1 GB (1.6 GB RSS) ([`results/peak-rss.txt`](results/peak-rss.txt)).
+8. **The tolerance has to be argued from both sides.** The kernel's real error is 1.42e-6. The
+   tolerance (2e-5) is 14× above that and 55× below the error of an fp16 accumulator (1.1e-3), the
+   subtlest of the six injected bugs. A tolerance taken from fp16 storage error (~1e-3) would have
+   passed that bug.
 
 ## Reproduce
 
 ```bash
 make bench LABEL=mine   # writes results/mine/{env.txt,bw.csv,bench.csv,parts.csv,gqa.csv}
 ./build/kvbench --lens=4096 --pages=16 --types=f16 --reps=50   # one point; flags are listed in bench/bench.cpp
-python3 scripts/tables.py mine   # the markdown tables used below, from results/mine/
+python3 scripts/tables.py mine   # the markdown tables of the Numbers section, from results/mine/
+python3 scripts/tables.py mine other   # run-to-run spread between two labels
 ```
 
 `env.txt` records the machine (chip, cores, memory, GPU cores from `system_profiler
 SPDisplaysDataType`, macOS) and the load average and number of running Docker containers before
-and after. The largest case (32k tokens, fp32, B = 2) holds a contiguous and a paged copy of a
-512 MiB cache (K + V) plus a 256 MiB flush buffer.
+and after, and the top processes by CPU. The largest case (32k tokens, fp32, B = 2) holds a
+contiguous and a paged copy of a 512 MiB cache (K + V) plus a 256 MiB flush buffer; the peak
+footprint of the whole default sweep is 2.1 GB, 1.6 GB resident
+([`results/peak-rss.txt`](results/peak-rss.txt), `/usr/bin/time -l`).
 
 ## Limitations
 
+- The machine was not idle during the final runs (load average 24–26 from other processes, see
+  [Numbers](#numbers)). GPU results repeat within a few percent; CPU-reference times do not.
+- The read-bandwidth probe is a simple kernel, not the hardware's peak: the paged kernel reaches
+  95–98% of it at 32k (fp32, run 1), so it is a measured reference point, not a ceiling.
 - One machine. Absolute numbers are for an M4 Max with a 40-core GPU; other Apple GPUs have
   different bandwidth and core counts.
 - Decode only (one query token per sequence); no prefill, no causal mask, no ALiBi/RoPE, no

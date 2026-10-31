@@ -1,0 +1,18 @@
+# device=Apple M4 Max batch=2 heads=32 kv_heads=8 head_dim=128 reps=30 warmup=3 cpu_reps=3 cpu_threads=16 flush=1 simdgroups=4 timing=pipelined
+impl,dtype,batch,seq_len,page,part,reps,median_us,min_us,max_us,gbps,max_diff_vs_naive
+gpu_paged,f32,2,512,32,64,30,58.15,42.63,133.25,145.4,nan
+gpu_paged_per_head,f32,2,512,32,64,30,56.69,42.67,61.96,149.1,nan
+gpu_paged,f16,2,512,32,64,30,42.10,30.50,50.29,101.2,nan
+gpu_paged_per_head,f16,2,512,32,64,30,39.85,30.00,45.12,106.9,nan
+gpu_paged,f32,2,2048,32,64,30,151.29,145.50,220.08,222.2,nan
+gpu_paged_per_head,f32,2,2048,32,64,30,150.27,110.62,482.29,223.7,nan
+gpu_paged,f16,2,2048,32,64,30,101.60,75.12,413.88,165.8,nan
+gpu_paged_per_head,f16,2,2048,32,64,30,99.94,81.71,181.83,168.5,nan
+gpu_paged,f32,2,8192,32,256,30,388.04,350.25,628.38,346.1,nan
+gpu_paged_per_head,f32,2,8192,32,256,30,423.79,402.75,1013.00,316.9,nan
+gpu_paged,f16,2,8192,32,256,30,247.12,215.58,408.25,271.8,nan
+gpu_paged_per_head,f16,2,8192,32,256,30,261.15,230.17,342.25,257.2,nan
+gpu_paged,f32,2,32768,32,512,30,1296.63,1245.12,1700.46,414.1,nan
+gpu_paged_per_head,f32,2,32768,32,512,30,1881.83,1763.79,2436.71,285.3,nan
+gpu_paged,f16,2,32768,32,512,30,709.44,649.25,870.92,378.5,nan
+gpu_paged_per_head,f16,2,32768,32,512,30,792.67,766.83,1443.54,338.7,nan
