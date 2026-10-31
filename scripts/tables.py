@@ -77,5 +77,32 @@ def main(label):
             print(f"| {dtype} | {tok(n)} | {ta:.1f} | {tb:.1f} | {tb / ta:.2f}× | {float(a['gbps']):.0f} / {float(b['gbps']):.0f} |")
 
 
+def spread(label_a, label_b):
+    """Run-to-run spread of the median times between two full sweeps."""
+    def keyed(label, name):
+        return {(r["impl"], r["dtype"], r["seq_len"], r["page"], r["part"]): float(r["median_us"])
+                for r in load(Path("results") / label / name)}
+    print(f"**Run-to-run spread, {label_a} vs {label_b}: |a − b| / mean of the two medians**\n")
+    print("| file | impl | points | median spread | max spread | worst point |")
+    print("|---|---|---:|---:|---:|---|")
+    for name in ("bench.csv", "parts.csv", "gqa.csv", "bw.csv"):
+        if name == "bw.csv":
+            a, b = (float(load(Path("results") / l / name)[0]["median_us"]) for l in (label_a, label_b))
+            print(f"| bw.csv | read_bw | 1 | {abs(a - b) / ((a + b) / 2):.1%} | | |")
+            continue
+        A, B = keyed(label_a, name), keyed(label_b, name)
+        by_impl = {}
+        for k in A:
+            by_impl.setdefault(k[0], []).append((abs(A[k] - B[k]) / ((A[k] + B[k]) / 2), k))
+        for impl, v in by_impl.items():
+            v.sort()
+            worst = v[-1][1]
+            print(f"| {name} | {impl} | {len(v)} | {v[len(v) // 2][0]:.1%} | {v[-1][0]:.1%} "
+                  f"| {worst[1]} {tok(worst[2])} page {worst[3]} part {worst[4]}: {A[worst]:.1f} vs {B[worst]:.1f} µs |")
+
+
 if __name__ == "__main__":
-    main(sys.argv[1] if len(sys.argv) > 1 else "local")
+    if len(sys.argv) > 2:
+        spread(sys.argv[1], sys.argv[2])
+    else:
+        main(sys.argv[1] if len(sys.argv) > 1 else "local")

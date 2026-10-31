@@ -100,7 +100,12 @@ element sums `p_t·v_t` over all tokens.
 **Timing.** Each measured run is one command buffer; time is `GPUEndTime − GPUStartTime`
 (GPU execution only: no shader compile, no CPU encode). Before each timed run a 256 MiB blit
 fill evicts the cache data from the GPU's caches (the real decode step reads a layer's KV once
-per token, so cold-cache is the honest case). Each point: 3 warm-up runs, then 30 timed runs, median reported (min and max are in the CSV); the CPU reference: 1 warm-up, 3 timed runs, wall clock. Effective bandwidth is the
+per token, so cold-cache is the honest case). All flush and kernel command buffers of one
+point are submitted back to back without CPU waits, chained by an `MTLEvent` so they never
+overlap (`begin_pipelined` in [`src/metal_attn.hpp`](src/metal_attn.hpp)); why this matters is
+the first item of [What I learned](#what-i-learned). Each point: 3 warm-up runs, then 30 timed
+runs, median reported (min and max are in the CSV). CPU reference: 1 warm-up, 3 timed runs,
+wall clock, 16 threads. Effective bandwidth is the
 minimum traffic of the step (K and V of every live token, plus q and out) divided by the
 median time; the workspace traffic of split-K is not counted.
 
