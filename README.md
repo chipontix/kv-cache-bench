@@ -10,7 +10,8 @@ per byte. It is bound by memory bandwidth, and the job of the kernel is to strea
 close to the memory system's speed as possible while the cache sits in fixed-size blocks
 scattered through a pool (as in vLLM's PagedAttention), not in one contiguous array.
 
-A personal project, written from scratch. Ideas it uses come from published work and are cited
+Written by the AI coding agent Claude Code (Anthropic) under Rabiya's direction, see
+[How it was built](#how-it-was-built). Ideas it uses come from published work and are cited
 where they are used: paged KV cache (Kwon et al., *Efficient Memory Management for Large
 Language Model Serving with PagedAttention*, SOSP 2023), online softmax (Milakov & Gimelshein,
 *Online normalizer calculation for softmax*, 2018), split-K over the sequence (Dao et al.,
@@ -104,7 +105,7 @@ fill evicts the cache data from the GPU's caches (the real decode step reads a l
 per token, so cold-cache is the honest case). All flush and kernel command buffers of one
 point are submitted back to back without CPU waits, chained by an `MTLEvent` so they never
 overlap (`begin_pipelined` in [`src/metal_attn.hpp`](src/metal_attn.hpp)); why this matters is
-the first item of [What I learned](#what-i-learned). Each point: 3 warm-up runs, then 30 timed
+the first item of [Findings](#findings). Each point: 3 warm-up runs, then 30 timed
 runs, median reported (min and max are in the CSV). CPU reference: 1 warm-up, 3 timed runs,
 wall clock, 16 threads. Effective bandwidth is the
 minimum traffic of the step (K and V of every live token, plus q and out) divided by the
@@ -308,7 +309,7 @@ length.
 | f16 | 8k | 245.2 | 264.8 | 1.08× | 274 / 254 |
 | f16 | 32k | 696.7 | 794.7 | 1.14× | 385 / 338 |
 
-## What I learned
+## Findings
 
 1. **Measuring the GPU one run at a time measured the power state, not the kernel.** With the first
    method (commit, wait, read `GPUEndTime − GPUStartTime`, repeat), the same binary at the same point
@@ -335,7 +336,7 @@ length.
    lose 10% to the extra merge work against 512. Hence a partition size that depends on the length.
 5. **Sharing K/V across a GQA group only pays off when the cache is long.** One threadgroup per KV head
    (4 query heads) vs one per query head: 1.49× faster at 32k (fp32), 1.14× (fp16), 1.08× at 8k, and
-   no gain (0.97–0.99×) at 512 and 2k. My reading, not verified with counters: with a short sequence
+   no gain (0.97–0.99×) at 512 and 2k. A likely reading, not verified with counters: with a short sequence
    the four threadgroups of a group read the same rows at about the same time and hit in cache, while at
    32k the extra 4× traffic reaches DRAM.
 6. **Arithmetic tweaks showed no gain in a memory-bound kernel.** Two tokens per loop iteration
@@ -386,6 +387,14 @@ footprint of the whole default sweep is 2.10 GB, 1.65 GB resident, at commit `f2
   traffic are real but are not counted, so the figure slightly understates the bytes moved.
 - The CPU reference is fp64 scalar code on 16 threads, written for accuracy, not speed; it is a
   baseline for "how far off a straightforward CPU loop is", not an optimized CPU kernel.
+
+## How it was built
+
+The code, tests and documentation in this repository were written by the AI coding agent
+Claude Code (Anthropic), from a problem statement by Rabiya and under her direction: she set
+the task, the scope and the acceptance criteria, and the measurements were run on her M4 Max.
+Every number in this README comes from a file in [`results/`](results/) produced by the
+commands shown next to it.
 
 ## License
 
