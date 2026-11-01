@@ -341,6 +341,50 @@ length.
 | f16 | 8k | 245.2 | 264.8 | 1.08× | 274 / 254 |
 | f16 | 32k | 696.7 | 794.7 | 1.14× | 385 / 338 |
 
+## int8 cache
+
+Same sweep as [Numbers](#numbers) (`bench.csv`, `gpu_paged` rows with dtype `i8`), plus
+`accuracy.csv` from `kvbench --accuracy`: for each length the same q and fp32 K/V are stored as
+fp32, fp16 and int8 (pages 16 and 128), and each output is compared with the fp64 reference on
+the unrounded fp32 data, with uniform data and with per-chunk magnitudes (`varied`, as in the
+tests). Memory is the size of the K and V pools including the scales (`kv_bytes` column).
+
+*Tables pending the final run on a quiet machine; they are printed by
+`python3 scripts/tables.py <label>`.*
+
+## Comparison with llama.cpp and MLX
+
+`make bench-compare` times one decode-attention step, not a model, on the shape above (B = 2,
+H = 32, Hkv = 8, D = 128, 512–32k tokens, q ~ U(−3, 3), K, V ~ U(−1, 1)):
+
+- **llama.cpp** `ggml_flash_attn_ext` on its Metal backend, release `b12000`, built from source
+  ([`bench/vs_llamacpp.cpp`](bench/vs_llamacpp.cpp)); cache types f32, f16 and its int8 type `q8_0`
+  (one fp16 scale per 32 values).
+- **MLX** `mx.fast.scaled_dot_product_attention`, 0.32.4 ([`bench/vs_mlx.py`](bench/vs_mlx.py));
+  f32 and f16. For f16, q and the output are fp16 too: given an fp32 q, MLX promotes K and V to
+  fp32 first. MLX has no int8 variant of this op.
+- **This kernel** in two layouts. Neither llama.cpp nor MLX has a paged cache; their K and V are
+  contiguous `[B][Hkv][L][D]`. "contiguous" runs the same kernel on exactly that layout (one block
+  per sequence, `page = max_len`, block table `b → b`); "paged 16" is the shuffled 16-token pool of
+  the main benchmark.
+
+**Same inputs, same check.** llama.cpp runs in C++ on this repository's `Workload` (same seed and
+values); MLX reads the inputs and fp64 reference outputs that `kvbench --dump` writes. Every
+output is compared with the fp64 CPU reference on the same inputs: on the stored values for
+f32/f16 (tolerance 2e-5 for this kernel, as in [Tolerances](#tolerances); 1e-3 for llama.cpp and
+MLX, a sanity bound, not derived, since they may round q, probabilities or the output to fp16),
+and on the unquantized fp32 data for int8 and `q8_0` (5e-3). `scripts/tables.py compare` fails if
+any output is outside its tolerance.
+
+**Same timing for all three.** A chain of 50 dependent decode steps (each step's output is the
+next step's query) submitted at once: one ggml graph, one `mx.eval`, here one command buffer
+(`run_paged_steps`). Wall clock until it completes, divided by 50; 3 warm-up chains, median of 15.
+Caches are warm, unlike the cold-cache tables above, so short contexts (whose K/V fit in the SoC
+caches) show more than DRAM bandwidth; the two methods are not mixed in any table.
+
+*Tables pending the final run on a quiet machine; they are printed by
+`python3 scripts/tables.py compare <label>` from `results/<label>/compare.csv`.*
+
 ## Findings
 
 1. **Measuring the GPU one run at a time measured the power state, not the kernel.** With the first
@@ -419,6 +463,20 @@ footprint of the whole default sweep is 2.10 GB, 1.65 GB resident, at commit `f2
   traffic are real but are not counted, so the figure slightly understates the bytes moved.
 - The CPU reference is fp64 scalar code on 16 threads, written for accuracy, not speed; it is a
   baseline for "how far off a straightforward CPU loop is", not an optimized CPU kernel.
+- int8 has one scale per (block, KV head), 2048 values for a 16-token page at `D = 128`: simple
+  and 0.2% overhead, but coarser than per-row or per-32-value scales, so one outlier in a block
+  costs the whole block precision. The quantizer runs on the CPU (in a real server it would run
+  when a block is written); its cost is not measured. The naive kernels have no int8 path.
+- int8 reaches clearly less effective bandwidth than fp16 and its cause is not found: four kernel
+  variants tried under load gave no gain and were not kept
+  ([`results/int8-experiments/notes.txt`](results/int8-experiments/notes.txt)). A profiler run
+  (GPU counters) would be the next step.
+- The comparison covers one op on one shape and one machine, with a warm cache and a contiguous
+  layout for llama.cpp and MLX, at fixed versions (llama.cpp `b12000`, MLX 0.32.4). It says
+  nothing about end-to-end tokens per second, other head sizes or batch sizes, prefill, or newer
+  releases. The libraries were run as shipped, with no tuning.
+- The comparison uses wall clock over a chain of steps, which includes each library's encode and
+  launch overhead; it cannot separate GPU time from host time for llama.cpp and MLX.
 
 ## How it was built
 
