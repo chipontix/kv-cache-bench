@@ -459,7 +459,7 @@ per length.
    method (commit, wait, read `GPUEndTime − GPUStartTime`, repeat), the same binary at the same point
    gave two stable answers about 2× apart: 408 µs or 216 µs for fp16 at 8k tokens, depending on the
    round ([`results/timing-method/sync-vs-pipelined.txt`](results/timing-method/sync-vs-pipelined.txt),
-   load 15). Submitting the flush and kernel command buffers back to back, event-chained so they
+   run on 2026-10-31 at load 15, committed in `f13a7e4`). Submitting the flush and kernel command buffers back to back, event-chained so they
    cannot overlap, gave 234–239 µs in every round. The GPU-side time of one command buffer depends on how busy the SoC was before it,
    so a benchmark must keep the GPU fed the way the real decode loop does.
 2. **At long context the paged kernel streams K/V about as fast as a plain read kernel can read
@@ -486,10 +486,12 @@ per length.
    with a short sequence the four threadgroups of a group read the same rows at about the same time
    and hit in cache, while at 32k the extra 4× traffic reaches DRAM.
 6. **Arithmetic tweaks showed no gain in a memory-bound kernel.** Two tokens per loop iteration
-   ([`results/unroll-ab/ab.txt`](results/unroll-ab/ab.txt), 5 interleaved rounds at load 12–14): the
+   ([`results/unroll-ab/ab.txt`](results/unroll-ab/ab.txt), 5 interleaved rounds at load 12–14, run on
+   2026-10-31, committed in `f13a7e4`): the
    medians of the two variants differ by at most 2.1% at every point, while single rounds of one
    point span up to 21%, so no gain was detected. One `exp` per token instead of two
-   ([`results/prelim-under-load/one-exp-ab.txt`](results/prelim-under-load/one-exp-ab.txt)) was only
+   ([`results/prelim-under-load/one-exp-ab.txt`](results/prelim-under-load/one-exp-ab.txt), 2026-10-31,
+   commit `7637835`) was only
    measured under load 35–41, where paired runs differ by up to 19%: no gain detected there either,
    which is weaker evidence. In both cases the simpler code stayed.
 7. **In Objective-C++ called from a C++ `main`, a getter can leak.** `[MTLBuffer contents]` retains
@@ -504,7 +506,8 @@ per length.
    pool is 0.501 of fp16 (scales add 0.2%), and int8 is 1.14–1.46× faster than fp16 at page 16, but
    its effective bandwidth is 65–234 GB/s against 112–400 for fp16: it is not bound by bytes. The
    cause is not found; four variants tried under load gave no gain
-   ([`results/int8-experiments/notes.txt`](results/int8-experiments/notes.txt)), and a loop of the
+   ([`results/int8-experiments/notes.txt`](results/int8-experiments/notes.txt), 2026-11-01 at load
+   43–53, against the kernel of `fda2cef`), and a loop of the
    loads alone already stayed near 300–330 GB/s there. The accuracy cost is 17–25× the error of fp16
    against the exact output (max 8.80e-4 at 512 tokens); on data whose magnitude varies per chunk,
    128-token pages lose more than 16-token ones (5.41e-5 vs 3.57e-5 at 32k), because one scale then
