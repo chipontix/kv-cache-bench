@@ -24,4 +24,8 @@ run "off-by-one row inside a page" 's/t % P) \* D/(t + 1) % P) * D/'
 run "simdgroup merge ignores max shift in L" 's/L += tg_ml\[s\]\[g\].y \* w;/L += tg_ml[s][g].y;/'
 run "reduce drops the last partition" 's/for (int i = 0; i < parts; ++i) {/for (int i = 0; i < parts - 1; ++i) {/'
 run "block table ignored (logical = physical)" 's/size_t(bt\[t \/ P\])/size_t(t \/ P)/'
+run "int8: K scale not applied" 's/k \*= k_scale\[blk \* p.num_kv_heads + kvh\];//'
+run "int8: scale of KV head 0 for every head" 's/k_scale\[blk \* p.num_kv_heads + kvh\]/k_scale[blk * p.num_kv_heads]/'
+run "int8: V dequantized with the K scale" 's/v \*= v_scale/v *= k_scale/'
+run "int8: V scale of the sequence's first block for every block" 's/v_scale\[blk \* p.num_kv_heads + kvh\]/v_scale[bt[0] * p.num_kv_heads + kvh]/'
 exit $status

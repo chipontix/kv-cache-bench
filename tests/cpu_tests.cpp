@@ -116,6 +116,40 @@ int main() {
         const double d = max_diff(o32, o16);
         expect(d > 0 && d < 5e-3, "fp16 storage reference differs from fp32 only by rounding");
     }
+    {  // int8 storage: each (block, KV head) slice round-trips within half its scale, its largest
+       // value maps to +-127, and an all-zero slice stays zero.
+        const std::vector<int> plens{1, 16, 17, 40};
+        const Shape ps{4, 2, 2, 64};
+        const PagedLayout L = make_paged_layout(plens, 16, 11);
+        auto src = random_vec(size_t(4) * 2 * 40 * 64, 12);
+        for (int t = 0; t < 40; ++t)  // sequence 3, KV head 1: a slice 8x larger, and one of zeros
+            for (int d = 0; d < 64; ++d) {
+                src[contig_index(ps, 40, 3, 1, t, d)] *= t < 16 ? 8.0f : 1.0f;
+                if (t >= 32) src[contig_index(ps, 40, 3, 1, t, d)] = 0.0f;
+            }
+        const size_t n = size_t(L.num_blocks) * 2 * 16 * 64;
+        std::vector<int8_t> q8(n, 0);
+        std::vector<float> scales(size_t(L.num_blocks) * 2, -1.0f), back(src.size(), 0.0f);
+        quantize_to_paged_i8(ps, L, plens, 40, src.data(), q8.data(), scales.data());
+        dequantize_paged_i8(ps, L, plens, 40, q8.data(), scales.data(), back.data());
+        bool within = true;
+        for (int b = 0; b < 4; ++b)
+            for (int kvh = 0; kvh < 2; ++kvh)
+                for (int t = 0; t < plens[b]; ++t) {
+                    const float sc = scales[size_t(L.block_table[b * L.max_blocks + t / 16]) * 2 + kvh];
+                    for (int d = 0; d < 64; ++d) {
+                        const size_t i = contig_index(ps, 40, b, kvh, t, d);
+                        within &= std::fabs(back[i] - src[i]) <= 0.5f * sc * (1 + 1e-6f);
+                    }
+                }
+        int peak = 0;
+        for (int8_t x : q8) peak = std::max(peak, std::abs(int(x)));
+        const float big = scales[size_t(L.block_table[3 * L.max_blocks + 0]) * 2 + 1];
+        const float small = scales[size_t(L.block_table[3 * L.max_blocks + 1]) * 2 + 1];
+        const float zero = scales[size_t(L.block_table[3 * L.max_blocks + 2]) * 2 + 1];
+        expect(within && peak == 127, "int8 blocks round-trip within scale / 2, the largest value maps to 127");
+        expect(big > 6 * small && small > 0 && zero == 0.0f, "int8 scale is per (block, KV head)");
+    }
 
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;

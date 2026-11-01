@@ -75,7 +75,8 @@ id<MTLComputePipelineState> pipeline(const char* fn, const Shape& s, int page, K
             @"HEAD_DIM" : @(s.head_dim),
             @"GROUP" : @(s.group()),
             @"PAGE_SIZE" : @(page),
-            @"KV_T" : t == KvType::f32 ? @"float" : @"half",
+            @"KV_T" : t == KvType::f32 ? @"float" : t == KvType::f16 ? @"half" : @"char",
+            @"KV_INT8" : @(t == KvType::i8),
             @"NSIMD" : @(kSimdGroups),
             @"QG" : @(qg ? qg : s.group()),
         };
@@ -144,6 +145,7 @@ double run_paged(const PagedArgs& a) {
     @autoreleasepool {  // Metal objects are autoreleased; drain them per call
         const Shape& s = a.shape;
         if (a.part_tokens < 0 || a.max_len <= 0) throw std::invalid_argument("part_tokens < 0 or max_len <= 0");
+        if (a.type == KvType::i8 && (!a.k_scale || !a.v_scale)) throw std::invalid_argument("i8 cache without scales");
         const int part_tokens = a.part_tokens ? a.part_tokens : auto_part_tokens(s, a.max_len);
         const int max_parts = (a.max_len + part_tokens - 1) / part_tokens;
         const size_t slots = size_t(s.batch) * s.num_heads * max_parts;
@@ -166,6 +168,10 @@ double run_paged(const PagedArgs& a) {
         [e setBuffer:mtl(&part_out) offset:0 atIndex:5];
         [e setBuffer:mtl(&part_ml) offset:0 atIndex:6];
         [e setBytes:&prm length:sizeof prm atIndex:7];
+        if (a.type == KvType::i8) {
+            [e setBuffer:mtl(a.k_scale) offset:0 atIndex:8];
+            [e setBuffer:mtl(a.v_scale) offset:0 atIndex:9];
+        }
         [e dispatchThreadgroups:MTLSizeMake(max_parts, s.num_heads / qg, s.batch)
             threadsPerThreadgroup:MTLSizeMake(32 * kSimdGroups, 1, 1)];
         [e setComputePipelineState:reduce];
@@ -184,6 +190,7 @@ double run_paged(const PagedArgs& a) {
 double run_naive(const NaiveArgs& a) {
     @autoreleasepool {  // Metal objects are autoreleased; drain them per call
         const Shape& s = a.shape;
+        if (a.type == KvType::i8) throw std::invalid_argument("naive kernels take f32 or f16 caches");
         const Buffer& scores = workspace(2, size_t(s.batch) * s.num_heads * a.max_len * sizeof(float));
         const KernelParams prm{s.num_kv_heads, 0, 0, 0, a.max_len, 1.0f / std::sqrt(float(s.head_dim))};
 

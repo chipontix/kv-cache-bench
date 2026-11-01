@@ -29,6 +29,39 @@ PagedLayout make_paged_layout(std::span<const int> seq_lens, int page_size, uint
     return L;
 }
 
+void quantize_to_paged_i8(const Shape& s, const PagedLayout& L, std::span<const int> seq_lens, int max_len,
+                          const float* contig, int8_t* paged, float* scales) {
+    const int P = L.page_size, D = s.head_dim;
+    for (int b = 0; b < s.batch; ++b)
+        for (int i = 0; i * P < seq_lens[b]; ++i)
+            for (int kvh = 0; kvh < s.num_kv_heads; ++kvh) {
+                const int t0 = i * P, t1 = std::min(seq_lens[b], t0 + P);
+                float amax = 0;
+                for (int t = t0; t < t1; ++t)
+                    for (int d = 0; d < D; ++d) amax = std::max(amax, std::fabs(contig[contig_index(s, max_len, b, kvh, t, d)]));
+                const float scale = amax / 127.0f;
+                scales[size_t(L.block_table[size_t(b) * L.max_blocks + i]) * s.num_kv_heads + kvh] = scale;
+                for (int t = t0; t < t1; ++t)
+                    for (int d = 0; d < D; ++d) {
+                        const float x = contig[contig_index(s, max_len, b, kvh, t, d)];
+                        paged[paged_index(s, L, b, kvh, t, d)] =
+                            scale > 0 ? int8_t(std::clamp(std::nearbyint(x / scale), -127.0f, 127.0f)) : 0;
+                    }
+            }
+}
+
+void dequantize_paged_i8(const Shape& s, const PagedLayout& L, std::span<const int> seq_lens, int max_len,
+                         const int8_t* paged, const float* scales, float* contig) {
+    for (int b = 0; b < s.batch; ++b)
+        for (int kvh = 0; kvh < s.num_kv_heads; ++kvh)
+            for (int t = 0; t < seq_lens[b]; ++t) {
+                const float scale =
+                    scales[size_t(L.block_table[size_t(b) * L.max_blocks + t / L.page_size]) * s.num_kv_heads + kvh];
+                for (int d = 0; d < s.head_dim; ++d)
+                    contig[contig_index(s, max_len, b, kvh, t, d)] = float(paged[paged_index(s, L, b, kvh, t, d)]) * scale;
+            }
+}
+
 template <class T>
 void attention_reference(const Shape& s, std::span<const int> seq_lens, int max_len,
                          const float* q, const T* k, const T* v, float* out, float scale,

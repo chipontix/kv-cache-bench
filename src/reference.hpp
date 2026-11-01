@@ -53,6 +53,18 @@ void scatter_to_paged(const Shape& s, const PagedLayout& L, std::span<const int>
                     paged[paged_index(s, L, b, kvh, t, d)] = contig[contig_index(s, max_len, b, kvh, t, d)];
 }
 
+// int8 storage: the page_size x D values of one (physical block, KV head) are stored as int8
+// with one fp32 scale, max|x| / 127, so x ~= int8 * scale with an error of at most scale / 2.
+// Quantizes the live tokens of the contiguous fp32 cache into `paged` ([blocks][Hkv][page][D])
+// and `scales` ([blocks][Hkv]).
+void quantize_to_paged_i8(const Shape& s, const PagedLayout& L, std::span<const int> seq_lens, int max_len,
+                          const float* contig, int8_t* paged, float* scales);
+
+// The inverse, for the reference: the fp32 values the kernel computes with (int8 * scale), in
+// the contiguous layout. Only live tokens are written.
+void dequantize_paged_i8(const Shape& s, const PagedLayout& L, std::span<const int> seq_lens, int max_len,
+                         const int8_t* paged, const float* scales, float* contig);
+
 // out[b][h][d] = softmax_t(scale * q.k_t) . v_t over the contiguous cache. Accumulates in
 // fp64 with a two-pass softmax (max, then exp-sum), so its own error is far below the
 // tolerances the GPU kernels are tested against. q and out are [B][H][D].

@@ -1,6 +1,7 @@
 // Decode-step attention kernels. Compiled at run time by the host (newLibraryWithSource) with
 // these macros: HEAD_DIM (64 or 128), GROUP (query heads per KV head), PAGE_SIZE (tokens per
-// block), KV_T (float or half: the storage type of the K/V cache), NSIMD (simdgroups per
+// block), KV_T (float, half or char: the storage type of the K/V cache), KV_INT8 (1 when KV_T is
+// char: every (block, KV head) has an fp32 scale for K and one for V, applied after loading), NSIMD (simdgroups per
 // threadgroup in paged_decode), QG (query heads per paged_decode threadgroup: GROUP normally,
 // 1 for the ablation that reads K/V once per query head). Everything is accumulated in fp32,
 // whatever KV_T is.
@@ -47,6 +48,10 @@ kernel void paged_decode(device const float* q [[buffer(0)]],       // [B][H][D]
                          device float* part_out [[buffer(5)]],       // [B][H][max_parts][D]
                          device float2* part_ml [[buffer(6)]],       // [B][H][max_parts]
                          constant Params& p [[buffer(7)]],
+#if KV_INT8
+                         device const float* k_scale [[buffer(8)]],  // [blocks][Hkv]
+                         device const float* v_scale [[buffer(9)]],
+#endif
                          uint3 tg [[threadgroup_position_in_grid]],
                          uint sg [[simdgroup_index_in_threadgroup]],
                          uint lane [[thread_index_in_simdgroup]],
@@ -70,9 +75,14 @@ kernel void paged_decode(device const float* q [[buffer(0)]],       // [B][H][D]
 
     device const int* bt = block_table + b * p.max_blocks;
     for (int t = t0 + int(sg); t < t1; t += NSIMD) {
-        const size_t row = ((size_t(bt[t / P]) * p.num_kv_heads + kvh) * P + t % P) * D + lane * DPL;
-        const f_vec k = f_vec(*(device const kv_vec*)(k_cache + row));
-        const f_vec v = f_vec(*(device const kv_vec*)(v_cache + row));
+        const size_t blk = size_t(bt[t / P]);
+        const size_t row = ((blk * p.num_kv_heads + kvh) * P + t % P) * D + lane * DPL;
+        f_vec k = f_vec(*(device const kv_vec*)(k_cache + row));
+        f_vec v = f_vec(*(device const kv_vec*)(v_cache + row));
+#if KV_INT8
+        k *= k_scale[blk * p.num_kv_heads + kvh];
+        v *= v_scale[blk * p.num_kv_heads + kvh];
+#endif
         for (int g = 0; g < QG; ++g) {
             const float s = simd_sum(dot(qv[g], k));  // identical in every lane
             const float m_new = max(m[g], s);

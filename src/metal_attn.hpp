@@ -32,9 +32,11 @@ private:
     size_t bytes_ = 0;
 };
 
-enum class KvType { f32, f16 };
-inline const char* name(KvType t) { return t == KvType::f32 ? "f32" : "f16"; }
-inline size_t elem_size(KvType t) { return t == KvType::f32 ? 4 : 2; }
+// i8: int8 values with one fp32 scale per (block, KV head) for K and for V (quantize_to_paged_i8);
+// paged kernel only.
+enum class KvType { f32, f16, i8 };
+inline const char* name(KvType t) { return t == KvType::f32 ? "f32" : t == KvType::f16 ? "f16" : "i8"; }
+inline size_t elem_size(KvType t) { return t == KvType::f32 ? 4 : t == KvType::f16 ? 2 : 1; }
 
 constexpr int kSimdGroups = 4;  // simdgroups per threadgroup in paged_decode
 
@@ -62,6 +64,8 @@ struct PagedArgs {
     const Buffer* seq_lens;     // int32 [B]
     const Buffer* out;          // float [B][H][D]
     bool share_kv = true;       // false: one threadgroup per query head (GQA ablation)
+    const Buffer* k_scale = nullptr;  // float [blocks][Hkv], required for KvType::i8
+    const Buffer* v_scale = nullptr;
 };
 
 struct NaiveArgs {
