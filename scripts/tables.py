@@ -118,7 +118,7 @@ def spread(label_a, label_b):
             continue
         A, B = keyed(label_a, name), keyed(label_b, name)
         by_impl = {}
-        for k in A:
+        for k in A.keys() & B.keys():  # points present in both runs
             by_impl.setdefault(k[0], []).append((abs(A[k] - B[k]) / ((A[k] + B[k]) / 2), k))
         for impl, v in by_impl.items():
             v.sort()

@@ -1,0 +1,24 @@
+date: 2026-11-01T13:07:24Z
+commit: 6745701
+macOS: 26.6.2 (25G83)
+cpu: Apple M4 Max, 16 cores (12P + 4E)
+memory: 48 GiB
+gpu Chipset Model: Apple M4 Max
+gpu Total Number of Cores: 40
+gpu Metal Support: Metal 4
+compiler: Apple clang version 21.0.0 (clang-2100.3.34.2)
+model: MacBook Pro
+power: AC Power, powermode 2
+load before: 5.26 4.27 3.89
+docker containers running: 0
+top processes by CPU before the run (second sample of top -l 2):
+  COMMAND          %CPU 
+  Blender          132.7
+  WindowServer     44.6 
+  kernel_task      13.8 
+  mds_stores       11.1 
+  Claude Helper    9.9  
+  BackgroundShortc 9.6  
+llama.cpp: b12000 (68d20b8), ggml Metal backend
+python: Python 3.14.6, mlx==0.32.4 numpy==2.5.4 
+load after: 4.89 4.27 3.90
