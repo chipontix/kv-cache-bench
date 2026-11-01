@@ -85,6 +85,10 @@ struct NaiveArgs {
 double run_paged(const PagedArgs&);
 double run_naive(const NaiveArgs&);
 
+// `steps` decode steps on the same inputs in one command buffer, executed one after another (a
+// serial encoder): how a decode loop would submit a stack of layers. Same return as run_paged.
+double run_paged_steps(const PagedArgs&, int steps);
+
 // Between begin_pipelined() and end_pipelined(), run_*() and flush_gpu_caches() commit their
 // command buffers without waiting (run_*() return 0), chained by an MTLEvent so they execute one
 // at a time, back to back. end_pipelined() waits and returns the GPU time of every run_*() call

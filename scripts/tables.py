@@ -127,7 +127,62 @@ def spread(label_a, label_b):
                   f"| {worst[1]} {tok(worst[2])} page {worst[3]} part {worst[4]}: {A[worst]:.1f} vs {B[worst]:.1f} µs |")
 
 
+# Sanity tolerances for the comparison (README, "Comparison"): our kernel on the stored values has
+# the derived 2e-5; the other implementations may round q, probabilities or the output to fp16; a
+# quantized cache is compared with the unquantized fp32 data.
+TOL = {("ours", "stored"): 2e-5, ("llamacpp", "stored"): 1e-3, ("mlx", "stored"): 1e-3,
+       ("ours", "fp32_data"): 5e-3, ("llamacpp", "fp32_data"): 5e-3}
+NAMES = {"ours": "this kernel", "llamacpp": "llama.cpp", "mlx": "MLX"}
+
+
+def compare(label):
+    rows = load(Path("results") / label / "compare.csv")
+    r = {(x["impl"], x["layout"], x["dtype"], int(x["seq_len"])): x for x in rows}
+    lens = sorted({k[3] for k in r})
+    cell = lambda x: f"{float(x['median_us']):.1f} ({float(x['gbps']):.0f})" if x else "n/a"
+    us = lambda x: float(x["median_us"])
+    for dtype in ("f32", "f16"):
+        print(f"**{dtype} cache: µs per decode step (effective GB/s), chain of {rows[0]['chain']} steps, warm caches**\n")
+        print("| tokens | this kernel, contiguous | this kernel, paged 16 | llama.cpp | MLX "
+              "| llama.cpp / this, paged | MLX / this, paged |")
+        print("|---:|---:|---:|---:|---:|---:|---:|")
+        for n in lens:
+            oc, op = r[("ours", "contiguous", dtype, n)], r[("ours", "paged16", dtype, n)]
+            ll, ml = r[("llamacpp", "contiguous", dtype, n)], r[("mlx", "contiguous", dtype, n)]
+            print(f"| {tok(n)} | {cell(oc)} | {cell(op)} | {cell(ll)} | {cell(ml)} "
+                  f"| {us(ll) / us(op):.2f}× | {us(ml) / us(op):.2f}× |")
+        print()
+    print(f"**int8 cache: µs per decode step (effective GB/s), same method**\n")
+    print("| tokens | this kernel i8, contiguous | this kernel i8, paged 16 | llama.cpp q8_0 | this kernel f16, paged 16 "
+          "| q8_0 / this i8, paged | f16 / i8, this kernel, paged |")
+    print("|---:|---:|---:|---:|---:|---:|---:|")
+    for n in lens:
+        oc, op = r[("ours", "contiguous", "i8", n)], r[("ours", "paged16", "i8", n)]
+        ll, h = r[("llamacpp", "contiguous", "q8_0", n)], r[("ours", "paged16", "f16", n)]
+        print(f"| {tok(n)} | {cell(oc)} | {cell(op)} | {cell(ll)} | {cell(h)} | {us(ll) / us(op):.2f}× | {us(h) / us(op):.2f}× |")
+    print()
+    print("**Correctness against the fp64 CPU reference on the same inputs: max |out − ref| over all lengths**\n")
+    print("| implementation | cache | layouts | reference on | max error | tolerance | |")
+    print("|---|---|---|---|---:|---:|---|")
+    bad = 0
+    groups = {}
+    for x in rows:
+        groups.setdefault((x["impl"], x["dtype"], x["err_vs"]), []).append(x)
+    for (impl, dtype, vs), xs in groups.items():
+        errs = [float(x["max_err"]) for x in xs if x["max_err"] != "nan"]
+        if not errs:
+            continue
+        tol, worst = TOL[(impl, vs)], max(errs)
+        bad += worst > tol
+        layouts = "contiguous, paged 16" if len({x["layout"] for x in xs}) > 1 else "contiguous"
+        print(f"| {NAMES[impl]} | {dtype} | {layouts} | {'stored values' if vs == 'stored' else 'unquantized fp32 data'} "
+              f"| {worst:.2e} | {tol:.0e} | {'ok' if worst <= tol else 'FAIL'} |")
+    return bad
+
+
 if __name__ == "__main__":
+    if len(sys.argv) > 2 and sys.argv[1] == "compare":
+        sys.exit(1 if compare(sys.argv[2]) else 0)
     if len(sys.argv) > 2:
         spread(sys.argv[1], sys.argv[2])
     else:

@@ -3,6 +3,10 @@
 // flushed before every timed run; runs are submitted back to back (begin_pipelined) unless
 // --sync; the median of --reps runs is reported. --accuracy instead prints the error of the
 // paged kernel for each storage type against the fp64 reference on the unrounded fp32 data.
+// --chain=N times the paged kernel the way bench/vs_llamacpp and bench/vs_mlx.py time theirs: N
+// decode steps in one submission (run_paged_steps), wall clock until it completes / N, warm
+// caches, contiguous and paged layouts. --dump=DIR writes the inputs and fp64 reference outputs of
+// those runs (raw little-endian fp32) for bench/vs_mlx.py to check MLX against.
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -50,6 +54,8 @@ int main(int argc, char** argv) {
     std::vector<KvType> types{KvType::f32, KvType::f16, KvType::i8};
     int reps = 30, warmup = 3, cpu_reps = 3;
     bool naive = true, cpu = true, flush = true, per_head = false, bw = false, sync = false, accuracy = false;
+    int chain = 0;
+    std::string dump;
     for (int i = 1; i < argc; ++i) {
         const char* a = argv[i];
         auto val = [&](const char* key) -> const char* {
@@ -66,6 +72,8 @@ int main(int argc, char** argv) {
         else if (auto v = val("--reps")) reps = std::atoi(v);
         else if (auto v = val("--warmup")) warmup = std::atoi(v);
         else if (auto v = val("--cpu-reps")) cpu_reps = std::atoi(v);
+        else if (auto v = val("--chain")) chain = std::atoi(v);
+        else if (auto v = val("--dump")) dump = v;
         else if (auto v = val("--types")) {
             types.clear();
             for (KvType t : {KvType::f32, KvType::f16, KvType::i8})
@@ -121,6 +129,63 @@ int main(int argc, char** argv) {
         const Stats s = time_gpu([&] { return run_read_bandwidth(src); });
         std::printf("read_bw,%zu,%d,%.2f,%.2f,%.2f,%.1f\n", src.size(), reps, s.median * 1e3, s.min * 1e3,
                     s.max * 1e3, double(src.size()) / (s.median * 1e-3) / 1e9);
+        return 0;
+    }
+    if (!dump.empty()) {  // L<n>_{q,k,v}.f32: q [B][H][D], K, V [B][Hkv][L][D]; L<n>_ref_{f32,f16}.f32: [B][H][D]
+        auto write = [&](const std::string& file, const void* p, size_t bytes) {
+            FILE* f = std::fopen((dump + "/" + file).c_str(), "wb");
+            if (!f || std::fwrite(p, 1, bytes, f) != bytes) {
+                std::fprintf(stderr, "cannot write %s/%s\n", dump.c_str(), file.c_str());
+                std::exit(1);
+            }
+            std::fclose(f);
+        };
+        for (int L : lens) {
+            const std::string pre = "L" + std::to_string(L) + "_";
+            for (KvType type : {KvType::f32, KvType::f16}) {
+                const Workload w(shape, type, std::vector<int>(size_t(shape.batch), L), uint64_t(L), 3.0f);
+                std::vector<float> ref(w.out_floats());
+                w.reference(ref.data(), threads);
+                write(pre + "ref_" + name(type) + ".f32", ref.data(), ref.size() * sizeof(float));
+                if (type == KvType::f32) {  // the f16 workload holds these values rounded to fp16
+                    write(pre + "q.f32", w.q->data(), w.q->size());
+                    write(pre + "k.f32", w.k->data(), w.k->size());
+                    write(pre + "v.f32", w.v->data(), w.v->size());
+                }
+            }
+        }
+        return 0;
+    }
+    if (chain) {  // reps chains of `chain` steps; tolerance: kernel vs reference (README, Tolerances)
+        std::printf("impl,layout,dtype,batch,seq_len,chain,reps,median_us,min_us,max_us,gbps,max_err,err_vs\n");
+        for (int L : lens)
+            for (KvType type : types) {
+                const Workload w(shape, type, std::vector<int>(size_t(shape.batch), L), uint64_t(L), 3.0f);
+                std::vector<float> ref(w.out_floats());  // f32, f16: stored values; i8: unquantized fp32 data
+                w.reference(ref.data(), threads);
+                for (bool contiguous : {true, false}) {
+                    const PagedCache cache(w, 16, uint64_t(L) * 131 + 16, contiguous);
+                    Buffer out(ref.size() * sizeof(float));
+                    run_paged(cache.args(w, 0, out));
+                    double err = 0;
+                    for (size_t i = 0; i < ref.size(); ++i) err = std::max(err, std::fabs(double(out.as<float>()[i]) - ref[i]));
+                    auto one_chain = [&] {  // one command buffer of `chain` steps, waited for
+                        const auto t0 = std::chrono::steady_clock::now();
+                        run_paged_steps(cache.args(w, 0, out), chain);
+                        const std::chrono::duration<double, std::milli> dt = std::chrono::steady_clock::now() - t0;
+                        return dt.count() / chain;
+                    };
+                    for (int i = 0; i < warmup; ++i) one_chain();
+                    std::vector<double> t;
+                    for (int i = 0; i < reps; ++i) t.push_back(one_chain());
+                    const Stats st = stats(t);
+                    const double bytes = double(cache.bytes()) + double(w.out_floats()) * 2 * sizeof(float);
+                    std::printf("ours,%s,%s,%d,%d,%d,%d,%.2f,%.2f,%.2f,%.1f,%.3g,%s\n", contiguous ? "contiguous" : "paged16",
+                                name(type), shape.batch, L, chain, reps, st.median * 1e3, st.min * 1e3, st.max * 1e3,
+                                bytes / (st.median * 1e-3) / 1e9, err, type == KvType::i8 ? "fp32_data" : "stored");
+                    std::fflush(stdout);
+                }
+            }
         return 0;
     }
     if (accuracy) {  // same seed = same q and fp32 K/V for every type; f16 rounds them, i8 quantizes per block

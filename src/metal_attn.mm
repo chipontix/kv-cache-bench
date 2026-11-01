@@ -141,47 +141,54 @@ Buffer::~Buffer() {
 }
 
 
-double run_paged(const PagedArgs& a) {
-    @autoreleasepool {  // Metal objects are autoreleased; drain them per call
-        const Shape& s = a.shape;
-        if (a.part_tokens < 0 || a.max_len <= 0) throw std::invalid_argument("part_tokens < 0 or max_len <= 0");
-        if (a.type == KvType::i8 && (!a.k_scale || !a.v_scale)) throw std::invalid_argument("i8 cache without scales");
-        const int part_tokens = a.part_tokens ? a.part_tokens : auto_part_tokens(s, a.max_len);
-        const int max_parts = (a.max_len + part_tokens - 1) / part_tokens;
-        const size_t slots = size_t(s.batch) * s.num_heads * max_parts;
-        const Buffer& part_out = workspace(0, slots * s.head_dim * sizeof(float));
-        const Buffer& part_ml = workspace(1, slots * 2 * sizeof(float));
-        const KernelParams prm{s.num_kv_heads, a.max_blocks, max_parts, part_tokens, a.max_len,
-                               1.0f / std::sqrt(float(s.head_dim))};
+// Encodes one decode step (paged_decode, then paged_reduce) into `e`.
+void encode_paged(id<MTLComputeCommandEncoder> e, const PagedArgs& a) {
+    const Shape& s = a.shape;
+    if (a.part_tokens < 0 || a.max_len <= 0) throw std::invalid_argument("part_tokens < 0 or max_len <= 0");
+    if (a.type == KvType::i8 && (!a.k_scale || !a.v_scale)) throw std::invalid_argument("i8 cache without scales");
+    const int part_tokens = a.part_tokens ? a.part_tokens : auto_part_tokens(s, a.max_len);
+    const int max_parts = (a.max_len + part_tokens - 1) / part_tokens;
+    const size_t slots = size_t(s.batch) * s.num_heads * max_parts;
+    const Buffer& part_out = workspace(0, slots * s.head_dim * sizeof(float));
+    const Buffer& part_ml = workspace(1, slots * 2 * sizeof(float));
+    const KernelParams prm{s.num_kv_heads, a.max_blocks, max_parts, part_tokens, a.max_len,
+                           1.0f / std::sqrt(float(s.head_dim))};
 
-        const int qg = a.share_kv ? s.group() : 1;
-        id<MTLComputePipelineState> decode = pipeline("paged_decode", s, a.page_size, a.type, qg);
-        id<MTLComputePipelineState> reduce = pipeline("paged_reduce", s, a.page_size, a.type, qg);
+    const int qg = a.share_kv ? s.group() : 1;
+    id<MTLComputePipelineState> decode = pipeline("paged_decode", s, a.page_size, a.type, qg);
+    id<MTLComputePipelineState> reduce = pipeline("paged_reduce", s, a.page_size, a.type, qg);
+    [e setComputePipelineState:decode];
+    [e setBuffer:mtl(a.q) offset:0 atIndex:0];
+    [e setBuffer:mtl(a.k) offset:0 atIndex:1];
+    [e setBuffer:mtl(a.v) offset:0 atIndex:2];
+    [e setBuffer:mtl(a.block_table) offset:0 atIndex:3];
+    [e setBuffer:mtl(a.seq_lens) offset:0 atIndex:4];
+    [e setBuffer:mtl(&part_out) offset:0 atIndex:5];
+    [e setBuffer:mtl(&part_ml) offset:0 atIndex:6];
+    [e setBytes:&prm length:sizeof prm atIndex:7];
+    if (a.type == KvType::i8) {
+        [e setBuffer:mtl(a.k_scale) offset:0 atIndex:8];
+        [e setBuffer:mtl(a.v_scale) offset:0 atIndex:9];
+    }
+    [e dispatchThreadgroups:MTLSizeMake(max_parts, s.num_heads / qg, s.batch)
+        threadsPerThreadgroup:MTLSizeMake(32 * kSimdGroups, 1, 1)];
+    [e setComputePipelineState:reduce];
+    [e setBuffer:mtl(&part_out) offset:0 atIndex:0];
+    [e setBuffer:mtl(&part_ml) offset:0 atIndex:1];
+    [e setBuffer:mtl(a.seq_lens) offset:0 atIndex:2];
+    [e setBuffer:mtl(a.out) offset:0 atIndex:3];
+    [e setBytes:&prm length:sizeof prm atIndex:4];
+    [e dispatchThreadgroups:MTLSizeMake(s.num_heads, s.batch, 1)
+        threadsPerThreadgroup:MTLSizeMake(s.head_dim, 1, 1)];
+}
+
+double run_paged(const PagedArgs& a) { return run_paged_steps(a, 1); }
+
+double run_paged_steps(const PagedArgs& a, int steps) {
+    @autoreleasepool {  // Metal objects are autoreleased; drain them per call
         id<MTLCommandBuffer> cb = new_cb();
         id<MTLComputeCommandEncoder> e = [cb computeCommandEncoder];  // serial: reduce sees decode's writes
-        [e setComputePipelineState:decode];
-        [e setBuffer:mtl(a.q) offset:0 atIndex:0];
-        [e setBuffer:mtl(a.k) offset:0 atIndex:1];
-        [e setBuffer:mtl(a.v) offset:0 atIndex:2];
-        [e setBuffer:mtl(a.block_table) offset:0 atIndex:3];
-        [e setBuffer:mtl(a.seq_lens) offset:0 atIndex:4];
-        [e setBuffer:mtl(&part_out) offset:0 atIndex:5];
-        [e setBuffer:mtl(&part_ml) offset:0 atIndex:6];
-        [e setBytes:&prm length:sizeof prm atIndex:7];
-        if (a.type == KvType::i8) {
-            [e setBuffer:mtl(a.k_scale) offset:0 atIndex:8];
-            [e setBuffer:mtl(a.v_scale) offset:0 atIndex:9];
-        }
-        [e dispatchThreadgroups:MTLSizeMake(max_parts, s.num_heads / qg, s.batch)
-            threadsPerThreadgroup:MTLSizeMake(32 * kSimdGroups, 1, 1)];
-        [e setComputePipelineState:reduce];
-        [e setBuffer:mtl(&part_out) offset:0 atIndex:0];
-        [e setBuffer:mtl(&part_ml) offset:0 atIndex:1];
-        [e setBuffer:mtl(a.seq_lens) offset:0 atIndex:2];
-        [e setBuffer:mtl(a.out) offset:0 atIndex:3];
-        [e setBytes:&prm length:sizeof prm atIndex:4];
-        [e dispatchThreadgroups:MTLSizeMake(s.num_heads, s.batch, 1)
-            threadsPerThreadgroup:MTLSizeMake(s.head_dim, 1, 1)];
+        for (int i = 0; i < steps; ++i) encode_paged(e, a);
         [e endEncoding];
         return finish(cb);
     }
