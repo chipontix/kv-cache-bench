@@ -30,7 +30,7 @@ or other implementations; llama.cpp and MLX are only run, unmodified, as baselin
 | int8 storage stays within an error bound derived from its per-block scales | `gpu_tests`, check `paged-i8-vs-f32-data`, worst error is 0.117 of the bound |
 | Speed and effective bandwidth vs naive GPU and CPU, 512–32k tokens, pages 16–128 | [Numbers](#numbers), one run on a quiet machine, raw CSV in [`results/m4max-final/`](results/m4max-final/) |
 | int8 halves the cache and is 1.14–1.46× faster than fp16, at 17–25× its error | [int8 cache](#int8-cache) |
-| Same op, same data, same timing as llama.cpp and MLX: 1.06–2.58× faster in fp32 and int8, 0.81–1.38× their speed in fp16 | [Comparison](#comparison-with-llama-cpp-and-mlx), `make bench-compare` |
+| Same op, same data, same timing as llama.cpp and MLX: 1.06–2.58× faster in fp32 and int8, 0.81–1.38× their speed in fp16 | [Comparison](#comparison-with-llamacpp-and-mlx), `make bench-compare` |
 | Sharing one K/V read across a GQA group matters at long context only | [GQA ablation](#ablations): 1.53× at 32k, none at ≤ 2k |
 | The split-K partition size must follow the context length | [Partition sweep](#ablations): 1.9× at 512 tokens |
 
@@ -214,7 +214,7 @@ performance warnings recorded ([`results/hardware.txt`](results/hardware.txt); e
 `env.txt` records the same).
 
 **One run, quiet machine.** Every number in this section, in [int8](#int8-cache),
-[Comparison](#comparison-with-llama-cpp-and-mlx), [Ablations](#ablations) and the performance
+[Comparison](#comparison-with-llamacpp-and-mlx), [Ablations](#ablations) and the performance
 items of [Findings](#findings) comes from one run: `make bench LABEL=m4max-final && make
 bench-compare LABEL=m4max-final` at commit `6745701`, on 2026-11-01 with the other sessions on
 the machine stopped. Load average 4.9–6.1 over the whole run (sampled every 30 s,
