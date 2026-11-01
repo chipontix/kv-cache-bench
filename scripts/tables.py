@@ -27,7 +27,7 @@ def main(label):
     bw = load(d / "bw.csv")[0]
     print(f"Read-bandwidth probe: {float(bw['gbps']):.1f} GB/s (median of {bw['reps']}, {int(bw['bytes']) >> 20} MiB)\n")
 
-    for dtype in ("f32", "f16"):
+    for dtype in [t for t in ("f32", "f16", "i8") if ("gpu_paged", t, lens[0]) in by]:
         print(f"**Paged kernel, {dtype} cache: median µs (effective GB/s)**\n")
         print("| tokens | split-K part | " + " | ".join(f"page {p}" for p in pages) + " |")
         print("|---:|---:|" + "---:|" * len(pages))
@@ -49,6 +49,32 @@ def main(label):
             c, v, p = float(cpu["median_us"]), float(nv["median_us"]), float(pg["median_us"])
             print(f"| {tok(n)} | {c / 1e3:.2f} | {v:.1f} | {p:.1f} | {float(nv['gbps']):.0f} / {float(pg['gbps']):.0f} "
                   f"| {v / p:.1f}× | {c / p:.0f}× |")
+        print()
+
+    if ("gpu_paged", "i8", lens[0]) in by:
+        print("**int8 vs fp16 cache, paged, page 16**\n")
+        print("| tokens | f16, µs | i8, µs | i8 speedup | GB/s f16 / i8 | K+V pool f16 / i8, MiB | i8 / f16 bytes |")
+        print("|---:|---:|---:|---:|---:|---:|---:|")
+        for n in lens:
+            h, q = by[("gpu_paged", "f16", n)][16], by[("gpu_paged", "i8", n)][16]
+            th, tq, bh, bq = float(h["median_us"]), float(q["median_us"]), int(h["kv_bytes"]), int(q["kv_bytes"])
+            print(f"| {tok(n)} | {th:.1f} | {tq:.1f} | {th / tq:.2f}× | {float(h['gbps']):.0f} / {float(q['gbps']):.0f} "
+                  f"| {bh / 2**20:.1f} / {bq / 2**20:.1f} | {bq / bh:.4f} |")
+        print()
+    if (d / "accuracy.csv").exists():
+        acc = {(r["data"], r["dtype"], int(r["seq_len"]), int(r["page"])): r for r in load(d / "accuracy.csv")}
+        apages = sorted({k[3] for k in acc})
+        print("**Error against the fp64 reference on the unrounded fp32 data: max |out − exact| (RMS)**\n")
+        print("| data | tokens | f32 | f16 | " + " | ".join(f"i8, page {p}" for p in apages) +
+              f" | i8 / f16, max, page {apages[0]} |")
+        print("|---|---:|---:|---:|" + "---:|" * len(apages) + "---:|")
+        for data in ("uniform", "varied"):
+            for n in sorted({k[2] for k in acc}):
+                c = lambda t, p: acc[(data, t, n, p)]
+                cell = lambda r: f"{float(r['max_abs_err']):.2e} ({float(r['rms_err']):.1e})"
+                ratio = float(c("i8", apages[0])["max_abs_err"]) / float(c("f16", apages[0])["max_abs_err"])
+                print(f"| {data} | {tok(n)} | {cell(c('f32', apages[0]))} | {cell(c('f16', apages[0]))} | " +
+                      " | ".join(cell(c("i8", p)) for p in apages) + f" | {ratio:.0f}× |")
         print()
 
     parts = load(d / "parts.csv")

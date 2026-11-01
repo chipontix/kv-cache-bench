@@ -1,7 +1,8 @@
 // Decode-step benchmark: paged fused kernel vs naive 3-pass GPU kernel vs the CPU reference.
 // Prints CSV to stdout. GPU time is the command buffer's GPUEndTime - GPUStartTime; caches are
 // flushed before every timed run; runs are submitted back to back (begin_pipelined) unless
-// --sync; the median of --reps runs is reported.
+// --sync; the median of --reps runs is reported. --accuracy instead prints the error of the
+// paged kernel for each storage type against the fp64 reference on the unrounded fp32 data.
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -46,9 +47,9 @@ double max_abs_diff(const Buffer& a, const Buffer& b, size_t n) {
 int main(int argc, char** argv) {
     Shape shape{2, 32, 8, 128};
     std::vector<int> lens{512, 1024, 2048, 4096, 8192, 16384, 32768}, pages{16, 32, 64, 128}, parts{0};  // part 0 = auto
-    std::vector<KvType> types{KvType::f32, KvType::f16};
+    std::vector<KvType> types{KvType::f32, KvType::f16, KvType::i8};
     int reps = 30, warmup = 3, cpu_reps = 3;
-    bool naive = true, cpu = true, flush = true, per_head = false, bw = false, sync = false;
+    bool naive = true, cpu = true, flush = true, per_head = false, bw = false, sync = false, accuracy = false;
     for (int i = 1; i < argc; ++i) {
         const char* a = argv[i];
         auto val = [&](const char* key) -> const char* {
@@ -65,14 +66,18 @@ int main(int argc, char** argv) {
         else if (auto v = val("--reps")) reps = std::atoi(v);
         else if (auto v = val("--warmup")) warmup = std::atoi(v);
         else if (auto v = val("--cpu-reps")) cpu_reps = std::atoi(v);
-        else if (auto v = val("--types")) types = std::strcmp(v, "f32") == 0 ? std::vector{KvType::f32}
-                                                 : std::strcmp(v, "f16") == 0 ? std::vector{KvType::f16} : types;
+        else if (auto v = val("--types")) {
+            types.clear();
+            for (KvType t : {KvType::f32, KvType::f16, KvType::i8})
+                if (std::strstr(v, name(t))) types.push_back(t);
+        }
         else if (!std::strcmp(a, "--no-naive")) naive = false;
         else if (!std::strcmp(a, "--no-cpu")) cpu = false;
         else if (!std::strcmp(a, "--no-flush")) flush = false;
         else if (!std::strcmp(a, "--per-head")) per_head = true;  // also time the GQA ablation
         else if (!std::strcmp(a, "--bw")) bw = true;              // only the read-bandwidth probe
         else if (!std::strcmp(a, "--sync")) sync = true;          // wait after every run (not pipelined)
+        else if (!std::strcmp(a, "--accuracy")) accuracy = true;  // error per storage type, no timing
         else {
             std::fprintf(stderr, "unknown argument %s\n", a);
             return 2;
@@ -118,11 +123,38 @@ int main(int argc, char** argv) {
                     s.max * 1e3, double(src.size()) / (s.median * 1e-3) / 1e9);
         return 0;
     }
-    std::printf("impl,dtype,batch,seq_len,page,part,reps,median_us,min_us,max_us,gbps,max_diff_vs_naive\n");
-    auto row = [&](const char* impl, const Workload& w, int page, int part, int n, Stats s, double diff) {
-        std::printf("%s,%s,%d,%d,%d,%d,%d,%.2f,%.2f,%.2f,%.1f,%.3g\n", impl, name(w.type), w.shape.batch, w.max_len,
-                    page, part, n, s.median * 1e3, s.min * 1e3, s.max * 1e3, w.min_bytes() / (s.median * 1e-3) / 1e9,
-                    diff);
+    if (accuracy) {  // same seed = same q and fp32 K/V for every type; f16 rounds them, i8 quantizes per block
+        std::printf("data,dtype,seq_len,page,max_abs_err,rms_err\n");
+        for (bool varied : {false, true})
+            for (int L : lens) {
+                const std::vector<int> ls(size_t(shape.batch), L);
+                const Workload exact(shape, KvType::f32, ls, uint64_t(L), 3.0f, false, varied);
+                std::vector<float> ref(exact.out_floats());
+                exact.reference(ref.data(), threads);
+                for (KvType type : types)
+                    for (int page : pages) {
+                        const Workload w(shape, type, ls, uint64_t(L), 3.0f, false, varied);
+                        const PagedCache cache(w, page, uint64_t(L) * 131 + page);
+                        Buffer out(ref.size() * sizeof(float));
+                        run_paged(cache.args(w, 0, out));
+                        double mx = 0, sq = 0;
+                        for (size_t i = 0; i < ref.size(); ++i) {
+                            const double e = std::fabs(double(out.as<float>()[i]) - ref[i]);
+                            mx = std::max(mx, e), sq += e * e;
+                        }
+                        std::printf("%s,%s,%d,%d,%.3g,%.3g\n", varied ? "varied" : "uniform", name(type), L, page, mx,
+                                    std::sqrt(sq / double(ref.size())));
+                        std::fflush(stdout);
+                    }
+            }
+        return 0;
+    }
+    std::printf("impl,dtype,batch,seq_len,page,part,reps,median_us,min_us,max_us,gbps,max_diff_vs_naive,kv_bytes\n");
+    auto row = [&](const char* impl, const Workload& w, int page, int part, int n, Stats s, double diff,
+                   size_t kv_bytes) {
+        std::printf("%s,%s,%d,%d,%d,%d,%d,%.2f,%.2f,%.2f,%.1f,%.3g,%zu\n", impl, name(w.type), w.shape.batch,
+                    w.max_len, page, part, n, s.median * 1e3, s.min * 1e3, s.max * 1e3,
+                    w.min_bytes() / (s.median * 1e-3) / 1e9, diff, kv_bytes);
         std::fflush(stdout);
     };
 
@@ -131,8 +163,12 @@ int main(int argc, char** argv) {
             Workload w(shape, type, std::vector<int>(size_t(shape.batch), L), uint64_t(L), 3.0f);
             const size_t n = w.out_floats();
             Buffer out_naive(n * sizeof(float)), out_paged(n * sizeof(float));
-            if (naive) row("gpu_naive", w, 0, 0, reps, time_gpu([&] { return run_naive(w.naive_args(out_naive)); }), 0);
-            if (cpu) {
+            const bool i8 = type == KvType::i8;  // paged kernel only; its accuracy is in --accuracy
+            const size_t contig_bytes = w.k->size() + w.v->size();
+            if (naive && !i8)
+                row("gpu_naive", w, 0, 0, reps, time_gpu([&] { return run_naive(w.naive_args(out_naive)); }), 0,
+                    contig_bytes);
+            if (cpu && !i8) {
                 std::vector<double> t;
                 std::vector<float> out(n);
                 for (int i = 0; i <= cpu_reps; ++i) {  // first run is warmup
@@ -146,19 +182,21 @@ int main(int argc, char** argv) {
                     diff = 0;
                     for (size_t i = 0; i < n; ++i) diff = std::max(diff, double(std::fabs(out[i] - out_naive.as<float>()[i])));
                 }
-                row("cpu_ref_fp64", w, 0, 0, cpu_reps, stats(t), diff);
+                row("cpu_ref_fp64", w, 0, 0, cpu_reps, stats(t), diff, contig_bytes);
             }
             for (int page : pages) {
                 PagedCache cache(w, page, uint64_t(L) * 131 + page);
                 for (int part : parts) {
                     const Stats s = time_gpu([&] { return run_paged(cache.args(w, part, out_paged)); });
-                    row("gpu_paged", w, page, part ? part : auto_part_tokens(w.shape, w.max_len), reps, s, naive ? max_abs_diff(out_paged, out_naive, n) : NAN);
+                    const double diff = naive && !i8 ? max_abs_diff(out_paged, out_naive, n) : NAN;
+                    row("gpu_paged", w, page, part ? part : auto_part_tokens(w.shape, w.max_len), reps, s, diff,
+                        cache.bytes());
                     if (per_head) {
                         PagedArgs args = cache.args(w, part, out_paged);
                         args.share_kv = false;
                         const Stats sp = time_gpu([&] { return run_paged(args); });
                         row("gpu_paged_per_head", w, page, part ? part : auto_part_tokens(w.shape, w.max_len), reps,
-                            sp, naive ? max_abs_diff(out_paged, out_naive, n) : NAN);
+                            sp, naive && !i8 ? max_abs_diff(out_paged, out_naive, n) : NAN, cache.bytes());
                     }
                 }
             }
