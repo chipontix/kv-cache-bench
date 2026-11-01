@@ -52,10 +52,12 @@ make bench-compare LABEL=me   # vs llama.cpp and MLX, writes results/me/compare.
 ```
 
 `make bench-compare` is the only target with dependencies, and it fetches them itself into
-`build-cmp/` (about 550 MB): llama.cpp release `b12000` (commit `68d20b8`) as a source tarball
-pinned by SHA-256 in [`CMakeLists.txt`](CMakeLists.txt), built with its Metal backend, and a
+`build-cmp/` on first use: llama.cpp release `b12000` (commit `68d20b8`) as a source tarball
+pinned by SHA-256 in [`CMakeLists.txt`](CMakeLists.txt), built with its Metal backend in a
+temporary directory of which only the static `vs_llamacpp` binary (6 MB) is kept, and a
 Python venv with the versions in [`bench/requirements-compare.txt`](bench/requirements-compare.txt)
-(`mlx==0.32.4`, `numpy==2.5.4`). It needs network access on first use and `python3` ≥ 3.10.
+(`mlx==0.32.4`, `numpy==2.5.4`, about 280 MB). It needs network access and 15 GB of free disk on
+first use (the script checks), and `python3` ≥ 3.10.
 
 ## Architecture
 
