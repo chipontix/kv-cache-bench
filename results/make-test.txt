@@ -6,9 +6,12 @@ ok   query heads 0 and 1 share KV head 0
 ok   block table maps logical blocks onto distinct physical blocks
 ok   paged scatter round-trips through paged_index
 ok   fp16 storage reference differs from fp32 only by rounding
-7 passed, 0 failed
+ok   int8 blocks round-trip within scale / 2, the largest value maps to 127
+ok   int8 scale is per (block, KV head)
+9 passed, 0 failed
 build/gpu_tests || [ $? -eq 77 ]
 device: Apple M4 Max
-max |gpu - ref|: f32 storage 1.42e-06, f16 storage 1.19e-06 (tolerance 2e-05)
+max |gpu - ref|: f32 storage 1.42e-06, f16 storage 1.19e-06, i8 storage 3.58e-07 (tolerance 2e-05)
 f16 storage vs fp32 data: worst error / derived bound = 0.087
-540 checks, 0 failed
+i8 storage vs fp32 data: worst error 0.00401, worst error / derived bound = 0.117
+846 checks, 0 failed

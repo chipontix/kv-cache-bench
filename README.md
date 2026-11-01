@@ -1,8 +1,9 @@
 # kv-cache-bench
 
 A decode-step attention kernel for a **paged KV cache**, written in Metal for Apple silicon, with
-a C++20 CPU reference, tolerance-based correctness tests for fp32 and fp16 cache storage, and a
-benchmark against a naive GPU implementation and the CPU reference, measured on an Apple M4 Max.
+a C++20 CPU reference, tolerance-based correctness tests for fp32, fp16 and int8 cache storage, a
+benchmark against a naive GPU implementation and the CPU reference, and a comparison with the
+attention ops of llama.cpp and MLX on the same shapes, measured on an Apple M4 Max.
 
 Decode is the token-by-token phase of LLM inference: every new token's query attends to the
 whole KV history of its sequence, so the step reads the entire cache once and does little math
@@ -16,15 +17,17 @@ where they are used: paged KV cache (Kwon et al., *Efficient Memory Management f
 Language Model Serving with PagedAttention*, SOSP 2023), online softmax (Milakov & Gimelshein,
 *Online normalizer calculation for softmax*, 2018), split-K over the sequence (Dao et al.,
 *Flash-Decoding for long-context inference*, 2023). No code was taken from vLLM, llama.cpp, MLX
-or other implementations.
+or other implementations; llama.cpp and MLX are only run, unmodified, as baselines by
+`make bench-compare`.
 
 ## What is shown, and by what
 
 | Claim | Evidence |
 |---|---|
-| The paged kernel matches an fp64 reference for fp32 and fp16 storage | `make test`: 7 CPU tests, 540 GPU checks, 0 failed ([`results/make-test.txt`](results/make-test.txt)) |
-| The tests can tell a broken kernel from a correct one | `make mutation`: 6 injected bugs, each caught ([`scripts/mutation.sh`](scripts/mutation.sh), [`results/mutation.txt`](results/mutation.txt)) |
+| The paged kernel matches an fp64 reference for fp32, fp16 and int8 storage | `make test`: 9 CPU tests, 846 GPU checks, 0 failed ([`results/make-test.txt`](results/make-test.txt)) |
+| The tests can tell a broken kernel from a correct one | `make mutation`: 10 injected bugs (4 of them in the int8 path), each caught ([`scripts/mutation.sh`](scripts/mutation.sh), [`results/mutation.txt`](results/mutation.txt)) |
 | fp16 storage stays within an error bound derived from fp16 rounding | `gpu_tests`, check `paged-f16-vs-f32-data`, worst error is 0.087 of the bound |
+| int8 storage stays within an error bound derived from its per-block scales | `gpu_tests`, check `paged-i8-vs-f32-data`, worst error is 0.117 of the bound |
 | Speed and effective bandwidth vs naive GPU and CPU, 512–32k tokens, pages 16–128 | [Numbers](#numbers), 3 full runs, raw CSV in [`results/`](results/) |
 | Sharing one K/V read across a GQA group matters at long context only | [GQA ablation](#ablations): 1.49× at 32k, none at ≤ 2k |
 | The split-K partition size must follow the context length | [Partition sweep](#ablations): 1.9× at 512 tokens |
@@ -45,7 +48,14 @@ run time from source embedded in the binary.
 make test             # build, CPU tests, GPU correctness grid
 make bench LABEL=me   # full sweep, writes results/me/
 make mutation         # inject bugs into the kernel, check the tests catch each
+make bench-compare LABEL=me   # vs llama.cpp and MLX, writes results/me/compare.csv
 ```
+
+`make bench-compare` is the only target with dependencies, and it fetches them itself into
+`build-cmp/` (about 550 MB): llama.cpp release `b12000` (commit `68d20b8`) as a source tarball
+pinned by SHA-256 in [`CMakeLists.txt`](CMakeLists.txt), built with its Metal backend, and a
+Python venv with the versions in [`bench/requirements-compare.txt`](bench/requirements-compare.txt)
+(`mlx==0.32.4`, `numpy==2.5.4`). It needs network access on first use and `python3` ≥ 3.10.
 
 ## Architecture
 
@@ -71,12 +81,15 @@ flowchart LR
 | [`src/reference.cpp`](src/reference.cpp) | fp64 CPU reference (two-pass softmax), block-table allocation |
 | [`src/workload.hpp`](src/workload.hpp) | test/benchmark data: contiguous and paged copies of the same cache |
 | [`tests/`](tests/) | `cpu_tests` (exact properties), `gpu_tests` (kernels vs reference over a grid) |
-| [`bench/bench.cpp`](bench/bench.cpp) | the benchmark, CSV out |
+| [`bench/bench.cpp`](bench/bench.cpp) | the benchmark, CSV out; also `--accuracy` (error per storage type), `--chain` (timing used for the comparison), `--dump` (inputs for MLX) |
+| [`bench/vs_llamacpp.cpp`](bench/vs_llamacpp.cpp) | llama.cpp's `ggml_flash_attn_ext` on the same shape and data |
+| [`bench/vs_mlx.py`](bench/vs_mlx.py) | MLX's `mx.fast.scaled_dot_product_attention` on the same shape and data |
+| [`scripts/`](scripts/) | `bench.sh`, `compare.sh` (the two sweeps), `mutation.sh`, `tables.py` (README tables from CSV) |
 
 **Shapes.** One decode step for `B` sequences, `H` query heads, `Hkv` KV heads (grouped-query
 attention, group `G = H / Hkv`), head dim `D` ∈ {64, 128}. The benchmark uses a Llama-3-8B-like
 layer: `H = 32`, `Hkv = 8`, `D = 128`, `B = 2`. `q` and the output are fp32; K and V are stored
-as fp32 or fp16; all arithmetic is fp32.
+as fp32, fp16 or int8; all arithmetic is fp32.
 
 **Paged layout.** The cache is a pool of physical blocks; a block holds `page_size` tokens of
 all KV heads, laid out `[block][Hkv][page_size][D]`. Logical block `i` of sequence `b` is
@@ -144,6 +157,14 @@ median time; the workspace traffic of split-K is not counted.
   latency. Accumulating in fp16 loses about 3 decimal digits: the fp16-accumulator mutation test
   gives a maximum error of 1.11e-3 (fp32 storage) and 1.22e-3 (fp16 storage), against 1.42e-6
   for the real kernel.
+- **int8 with one scale per (block, KV head).** Each physical block stores, per KV head, its
+  `page·D` K values as int8 plus one fp32 scale `max|x| / 127` (and the same for V), so a 16-token
+  page of one head costs 2048 bytes plus 4 for the scale, 0.2% overhead. The scale lives with the
+  block: quantizing happens once, when a block is written, and the block table that already
+  locates the data also locates its scale. The kernel converts `char4 → float4` and multiplies by
+  the scale right after the load; everything after that is the fp32 path. The price of one scale
+  per 2048 values is accuracy: llama.cpp's `q8_0` keeps one fp16 scale per 32 values. Both
+  errors are measured against the same exact output below.
 - **fp64 two-pass CPU reference.** The reference must be much more accurate than what it
   checks, and it should share as little as possible with the kernel: different algorithm
   (two-pass, not online), different precision, contiguous layout instead of paged.
@@ -170,6 +191,15 @@ right measure.
    each V element by at most `u·|v|`. So `|out_f16 − out_exact| ≤ max|v|·(u + e^{2E} − 1)` plus
    the tolerance of (1). This is what fp16 storage costs in accuracy; the test checks the kernel
    does not lose more than that.
+3. **int8 storage.** Against the reference on the dequantized values (`int8 · scale`, what the
+   kernel computes with): the same `2e-5` as (1). Against the unquantized fp32 data: the argument
+   of (2) with an absolute rounding step instead of a relative one. An element of a slice with
+   scale `s` moves by at most `s/2`, so score `t` moves by at most `scale·Σ_d|q_d|·s_k/2` (the
+   maximum over tokens is `E`) and a V element by `s_v/2`: `|out_i8 − out_exact| ≤ max|v|·(e^{2E} − 1)
+   + max s_v/2` plus the tolerance of (1). The int8 tests give K and V a magnitude that differs
+   per 16-token chunk and head (factors `2^−U(0,3)`), as real caches do, so that a scale applied
+   to the wrong block or head changes the output beyond the tolerance (two of the int8
+   mutations test exactly that).
 
 ## Numbers
 
@@ -398,5 +428,7 @@ commands shown next to it.
 
 ## License
 
-MIT, see [LICENSE](LICENSE). No third-party code or libraries; only Apple's system frameworks
-(Metal, Foundation) and the C++ standard library.
+MIT, see [LICENSE](LICENSE). The kernels, tests and benchmark use no third-party code or
+libraries, only Apple's system frameworks (Metal, Foundation) and the C++ standard library.
+`make bench-compare` downloads llama.cpp (MIT) and MLX (MIT) to run them as baselines; neither is
+part of this repository.
