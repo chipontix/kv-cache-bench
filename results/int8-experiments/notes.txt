@@ -1,0 +1,31 @@
+# int8 paged_decode: why is it at ~250-300 GB/s effective while f16 reaches ~370-390?
+# Draft experiments, 2026-11-01, machine NOT quiet (load average 43-53 from other sessions).
+# Each line: 3 runs of `kvbench --pages=16 --no-cpu --no-naive --reps=30`, cold caches, pipelined
+# GPU timing; fields are dtype,seq_len,median_us[,GB/s]. None of the variants was kept; the kernel
+# at commit fda2cef is the baseline. Numbers under this load are only good for large effects.
+
+## 1. Remove one cost from the int8 loop (results are wrong, timing only), 32k tokens
+base:          f16,734.77 i8,497.92 | f16,725.71 i8,537.37 | f16,727.58 i8,505.21
+no simd_sum:   f16,740.79 i8,485.40 | f16,733.81 i8,482.15 | f16,714.58 i8,485.81
+no exp:        f16,776.13 i8,478.69 | f16,730.10 i8,480.98 | f16,724.12 i8,482.19
+-> neither the reductions nor the exps account for more than ~5%.
+
+## 2. UNROLL tokens per simdgroup step, all row loads issued before the math (4k and 32k)
+U=1: f16,4096,174.29 i8,4096,111.88 f16,32768,740.31 i8,32768,503.44 | f16,4096,163.79 i8,4096,114.46 f16,32768,727.79 i8,32768,511.37 | f16,4096,166.94 i8,4096,116.21 f16,32768,734.90 i8,32768,500.25
+U=2: f16,4096,180.48 i8,4096,115.54 f16,32768,722.15 i8,32768,587.12 | f16,4096,162.52 i8,4096,113.15 f16,32768,722.63 i8,32768,720.21 | f16,4096,163.25 i8,4096,113.71 f16,32768,728.27 i8,32768,768.04
+U=4: f16,4096,171.08 i8,4096,116.62 f16,32768,731.94 i8,32768,507.54 | f16,4096,158.77 i8,4096,116.96 f16,32768,715.17 i8,32768,506.44 | f16,4096,159.98 i8,4096,120.90 f16,32768,717.00 i8,32768,685.58
+-> no gain.
+
+## 3. Loads only: the loop body replaced by acc += k + v (no dot, no softmax), GB/s last
+f32,4096,235.27,285.5 f16,4096,153.71,218.7 i8,4096,101.21,166.4 f32,32768,1340.98,400.4 f16,32768,741.00,362.3 i8,32768,436.56,307.6
+f32,4096,232.50,288.9 f16,4096,152.29,220.8 i8,4096,100.73,167.2 f32,32768,1361.12,394.5 f16,32768,745.81,360.0 i8,32768,442.56,303.4
+f32,4096,231.38,290.3 f16,4096,152.21,220.9 i8,4096,101.35,166.2 f32,32768,1310.52,409.7 f16,32768,742.75,361.5 i8,32768,405.17,331.4
+-> with this access pattern (one 128-byte int8 row per simdgroup per step, 4 bytes per lane) even
+   pure streaming stays near 300-330 GB/s at 32k; the full kernel adds ~15% on top.
+
+## 4. Half-simdgroups for int8, D = 128: 16 lanes per row, 8 bytes per lane, 2 tokens per step,
+##    per-half softmax states merged after the loop (passes gpu_tests: 846 checks, 0 failed)
+tokens t, t+4:  f16,512,72.90 i8,512,45.65 f16,4096,163.62 i8,4096,130.90 f16,32768,731.90 i8,32768,529.29 | f16,512,42.98 i8,512,41.44 f16,4096,162.46 i8,4096,128.02 f16,32768,717.21 i8,32768,542.58 | f16,512,43.08 i8,512,41.90 f16,4096,160.87 i8,4096,124.52 f16,32768,721.73 i8,32768,667.54
+tokens t, t+1:  f16,512,41.38 i8,512,42.04 f16,4096,166.00 i8,4096,127.48 f16,32768,730.46 i8,32768,526.50 | f16,512,44.04 i8,512,41.98 f16,4096,166.98 i8,4096,130.96 f16,32768,742.83 i8,32768,533.73 | f16,512,43.27 i8,512,40.96 f16,4096,168.21 i8,4096,129.69 f16,32768,750.77 i8,32768,532.69
+-> slower than the baseline (~530 vs ~500 us at 32k, ~128 vs ~113 us at 4k): the extra shuffles
+   cost more than the wider loads gain. Not kept.
