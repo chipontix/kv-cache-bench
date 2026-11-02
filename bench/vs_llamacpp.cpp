@@ -119,8 +119,7 @@ int main(int argc, char** argv) {
             ggml_backend_graph_compute(backend, one.gf);
             std::vector<float> out(w.out_floats());
             ggml_backend_tensor_get(one.out, out.data(), 0, out.size() * sizeof(float));
-            double err = 0;
-            for (size_t i = 0; i < out.size(); ++i) err = std::max(err, std::fabs(double(out[i]) - ref[i]));
+            const double err = max_abs_diff(out.data(), ref.data(), out.size());
             ggml_free(one.ctx);
 
             Graph g = build(q, k, v, shape, chain);

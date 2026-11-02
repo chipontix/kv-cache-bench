@@ -52,7 +52,7 @@ def main():
             if pre:
                 out = np.array(mx.fast.scaled_dot_product_attention(q, k, v, scale=scale).astype(mx.float32))
                 ref = np.fromfile(f"{pre}ref_{name}.f32", dtype=np.float32).reshape(B, H, 1, D)
-                err = float(np.abs(out.astype(np.float64) - ref).max())
+                err = float(np.nan_to_num(np.abs(out.astype(np.float64) - ref), nan=np.inf).max())  # tables.py skips "nan" as unsupported
 
             def chain():  # the lazy graph is built first; timed: mx.eval (encode, run, wait), as for the others
                 x = q

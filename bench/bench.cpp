@@ -40,11 +40,7 @@ Stats stats(std::vector<double> t) {
     return {n % 2 ? t[n / 2] : (t[n / 2 - 1] + t[n / 2]) / 2, t.front(), t.back()};
 }
 
-double max_abs_diff(const Buffer& a, const Buffer& b, size_t n) {
-    double m = 0;
-    for (size_t i = 0; i < n; ++i) m = std::max(m, double(std::fabs(a.as<float>()[i] - b.as<float>()[i])));
-    return m;
-}
+double max_abs_diff(const Buffer& a, const Buffer& b, size_t n) { return kvb::max_abs_diff(a.as<float>(), b.as<float>(), n); }
 
 }  // namespace
 
@@ -167,8 +163,7 @@ int main(int argc, char** argv) {
                     const PagedCache cache(w, 16, uint64_t(L) * 131 + 16, contiguous);
                     Buffer out(ref.size() * sizeof(float));
                     run_paged(cache.args(w, 0, out));
-                    double err = 0;
-                    for (size_t i = 0; i < ref.size(); ++i) err = std::max(err, std::fabs(double(out.as<float>()[i]) - ref[i]));
+                    const double err = max_abs_diff(out.as<float>(), ref.data(), ref.size());
                     auto one_chain = [&] {  // one command buffer of `chain` steps, waited for
                         const auto t0 = std::chrono::steady_clock::now();
                         run_paged_steps(cache.args(w, 0, out), chain);
@@ -242,11 +237,7 @@ int main(int argc, char** argv) {
                     const std::chrono::duration<double, std::milli> dt = std::chrono::steady_clock::now() - t0;
                     if (i) t.push_back(dt.count());
                 }
-                double diff = NAN;
-                if (naive) {
-                    diff = 0;
-                    for (size_t i = 0; i < n; ++i) diff = std::max(diff, double(std::fabs(out[i] - out_naive.as<float>()[i])));
-                }
+                const double diff = naive ? max_abs_diff(out.data(), out_naive.as<float>(), n) : NAN;
                 row("cpu_ref_fp64", w, 0, 0, cpu_reps, stats(t), diff, contig_bytes);
             }
             for (int page : pages) {

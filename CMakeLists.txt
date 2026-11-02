@@ -51,13 +51,17 @@ target_link_libraries(cpu_tests PRIVATE kvref)
 add_executable(gpu_tests tests/gpu_tests.cpp)
 target_link_libraries(gpu_tests PRIVATE kvmetal)
 
+add_executable(boundary_tests tests/boundary_tests.cpp)
+target_link_libraries(boundary_tests PRIVATE kvmetal)
+
 add_executable(kvbench bench/bench.cpp)
 target_link_libraries(kvbench PRIVATE kvmetal)
 
 enable_testing()
 add_test(NAME cpu_tests COMMAND cpu_tests)
 add_test(NAME gpu_tests COMMAND gpu_tests)
-set_tests_properties(gpu_tests PROPERTIES SKIP_RETURN_CODE 77)
+add_test(NAME boundary_tests COMMAND boundary_tests)
+set_tests_properties(gpu_tests boundary_tests PROPERTIES SKIP_RETURN_CODE 77)
 
 if(KVB_LLAMACPP)
   add_executable(vs_llamacpp bench/vs_llamacpp.cpp)

@@ -16,12 +16,6 @@ namespace {
 constexpr double kTolKernel = 2e-5;
 constexpr double kHalfUnit = 1.0 / 2048;  // fp16 unit roundoff, 2^-11
 
-double max_abs_diff(const float* a, const float* b, size_t n) {
-    double m = 0;
-    for (size_t i = 0; i < n; ++i) m = std::max(m, std::fabs(double(a[i]) - double(b[i])));
-    return m;
-}
-
 // First-order bound on how much rounding K and V to fp16 can move the exact output: each score
 // moves by at most E = u * scale * max_t sum_d |q_d k_td|, which changes every softmax weight by
 // a factor within exp(+-2E); rounding V adds u * max|v|.
@@ -134,7 +128,6 @@ int main() {
                         std::fill_n(out.as<float>(), n, NAN);
                         run_paged(cache.args(w, sc.part_tokens, out));
                         err = max_abs_diff(out.as<float>(), kref.data(), n);
-                        if (std::isnan(err)) err = INFINITY;
                         check(err <= kTolKernel, "paged", w.shape, L, type, page, sc.seed, err, kTolKernel);
                         worst[ti] = std::max(worst[ti], err);
                         if (page == 16 && shape.group() > 1) {  // one threadgroup per query head
@@ -143,7 +136,6 @@ int main() {
                             std::fill_n(out.as<float>(), n, NAN);
                             run_paged(args);
                             double e = max_abs_diff(out.as<float>(), kref.data(), n);
-                            if (std::isnan(e)) e = INFINITY;
                             check(e <= kTolKernel, "paged-per-head", w.shape, L, type, page, sc.seed, e, kTolKernel);
                             std::fill_n(out.as<float>(), n, NAN);
                             run_paged(cache.args(w, sc.part_tokens, out));

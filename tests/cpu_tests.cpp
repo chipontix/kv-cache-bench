@@ -25,11 +25,7 @@ std::vector<float> random_vec(size_t n, uint64_t seed) {
     return x;
 }
 
-double max_diff(const std::vector<float>& a, const std::vector<float>& b) {
-    double m = 0;
-    for (size_t i = 0; i < a.size(); ++i) m = std::max(m, std::fabs(double(a[i]) - double(b[i])));
-    return m;
-}
+double max_diff(const std::vector<float>& a, const std::vector<float>& b) { return max_abs_diff(a.data(), b.data(), a.size()); }
 
 }  // namespace
 

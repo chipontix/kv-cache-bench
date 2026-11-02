@@ -1,6 +1,8 @@
 // CPU side: shapes, the paged block table, and the fp64 reference used as ground truth.
 #pragma once
 
+#include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -19,6 +21,18 @@ struct Shape {
     int head_dim = 128;     // D
     int group() const { return num_heads / num_kv_heads; }
 };
+
+// max |a[i] - b[i]|, infinity if any difference is NaN. std::max(m, NaN) returns m, so a plain
+// maximum would call a kernel that leaves NaN in its output equal to anything.
+inline double max_abs_diff(const float* a, const float* b, size_t n) {
+    double m = 0;
+    for (size_t i = 0; i < n; ++i) {
+        const double e = std::fabs(double(a[i]) - double(b[i]));
+        if (std::isnan(e)) return INFINITY;
+        m = std::max(m, e);
+    }
+    return m;
+}
 
 // Contiguous ("naive") cache layout: [B][Hkv][max_len][D].
 inline size_t contig_index(const Shape& s, int max_len, int b, int kvh, int t, int d) {
