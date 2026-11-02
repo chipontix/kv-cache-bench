@@ -81,7 +81,8 @@ struct NaiveArgs {
 
 // Each call encodes the kernels into one command buffer, waits for it, and returns its GPU
 // time in milliseconds (GPUEndTime - GPUStartTime). Shader compilation happens on the first
-// call for a configuration and is not part of the returned time.
+// call for a configuration and is not part of the returned time. Throws std::invalid_argument for a
+// sequence length below 0, above max_len, or (paged) above the block table: max_blocks * page_size.
 double run_paged(const PagedArgs&);
 double run_naive(const NaiveArgs&);
 

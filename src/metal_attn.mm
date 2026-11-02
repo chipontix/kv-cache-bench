@@ -104,6 +104,18 @@ const Buffer& workspace(int slot, size_t bytes) {
     return *bufs[slot];
 }
 
+// The kernels trust seq_lens: past max_len the split-K slots of one head run into the next head's and
+// the reduce reads them, past the block table a row reads the next sequence's blocks. All of that gives
+// a wrong answer without an error, so it is refused here, before a command buffer exists.
+void check_lens(const Shape& s, const Buffer* seq_lens, int max_len, size_t capacity) {
+    for (int b = 0; b < s.batch; ++b) {
+        const int len = seq_lens->as<int>()[b];
+        if (len < 0 || len > max_len || size_t(len) > capacity)
+            throw std::invalid_argument("sequence " + std::to_string(b) + " has length " + std::to_string(len) +
+                                        ", max_len " + std::to_string(max_len) + ", capacity " + std::to_string(capacity));
+    }
+}
+
 double finish(id<MTLCommandBuffer> cb, bool timed = true) {
     if (g_pipelined) {
         [cb encodeSignalEvent:event() value:++g_event_value];
@@ -145,8 +157,6 @@ Buffer::~Buffer() {
 // Encodes one decode step (paged_decode, then paged_reduce) into `e`.
 void encode_paged(id<MTLComputeCommandEncoder> e, const PagedArgs& a) {
     const Shape& s = a.shape;
-    if (a.part_tokens < 0 || a.max_len < 0) throw std::invalid_argument("part_tokens < 0 or max_len < 0");
-    if (a.type == KvType::i8 && (!a.k_scale || !a.v_scale)) throw std::invalid_argument("i8 cache without scales");
     const int part_tokens = a.part_tokens ? a.part_tokens : auto_part_tokens(s, a.max_len);
     const int max_parts = std::max(1, (a.max_len + part_tokens - 1) / part_tokens);  // at least 1: no empty dispatch
     const size_t slots = size_t(s.batch) * s.num_heads * max_parts;
@@ -186,6 +196,9 @@ void encode_paged(id<MTLComputeCommandEncoder> e, const PagedArgs& a) {
 double run_paged(const PagedArgs& a) { return run_paged_steps(a, 1); }
 
 double run_paged_steps(const PagedArgs& a, int steps) {
+    if (a.part_tokens < 0 || a.max_len < 0 || a.page_size <= 0) throw std::invalid_argument("part_tokens < 0, max_len < 0 or page_size <= 0");
+    if (a.type == KvType::i8 && (!a.k_scale || !a.v_scale)) throw std::invalid_argument("i8 cache without scales");
+    check_lens(a.shape, a.seq_lens, a.max_len, size_t(a.max_blocks) * a.page_size);
     @autoreleasepool {  // Metal objects are autoreleased; drain them per call
         id<MTLCommandBuffer> cb = new_cb();
         id<MTLComputeCommandEncoder> e = [cb computeCommandEncoder];  // serial: reduce sees decode's writes
@@ -199,6 +212,7 @@ double run_naive(const NaiveArgs& a) {
     @autoreleasepool {  // Metal objects are autoreleased; drain them per call
         const Shape& s = a.shape;
         if (a.type == KvType::i8) throw std::invalid_argument("naive kernels take f32 or f16 caches");
+        check_lens(s, a.seq_lens, a.max_len, size_t(std::max(a.max_len, 0)));
         const Buffer& scores = workspace(2, size_t(s.batch) * s.num_heads * a.max_len * sizeof(float));
         const KernelParams prm{s.num_kv_heads, 0, 0, 0, a.max_len, 1.0f / std::sqrt(float(s.head_dim))};
 

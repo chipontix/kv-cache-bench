@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -140,6 +141,52 @@ int main() {
     for (const Shape& shape : shapes)
         for (KvType type : {KvType::f32, KvType::f16})
             for (int L : {1, 2, 3, 4, 5, 255, 256, 257, 512, 513}) check_naive(make_workload(shape, type, {L, L + 1}));
+    {  // Capacity: the host refuses a length the buffers cannot hold, before anything reaches the GPU.
+       // Page 16, 2 blocks per sequence: capacity 32.
+        const Workload w = make_workload({1, 8, 2, 128}, KvType::f32, {32, 32});
+        const PagedCache cache(w, 16, 5);
+        const size_t n = w.out_floats();
+        std::vector<float> ref(n);
+        w.reference(ref.data());
+        Buffer out(n * sizeof(float)), lens(2 * sizeof(int));
+        auto refused = [&](int l0, int l1, int max_len, int page = 16) {
+            lens.as<int>()[0] = l0, lens.as<int>()[1] = l1;
+            PagedArgs a = cache.args(w, 16, out);
+            a.seq_lens = &lens, a.max_len = max_len, a.page_size = page;
+            std::fill_n(out.as<float>(), n, NAN);
+            try {
+                run_paged(a);
+            } catch (const std::invalid_argument&) {
+                return std::all_of(out.as<float>(), out.as<float>() + n, [](float x) { return std::isnan(x); });
+            }
+            return false;
+        };
+        expect(!refused(32, 32, 32) && max_abs_diff(out.as<float>(), ref.data(), n) <= kTolKernel, "paged: exactly the capacity runs");
+        expect(refused(33, 33, 64), "paged: capacity + 1 is refused, whatever max_len says");
+        expect(refused(32, 33, 64), "paged: capacity + 1 in the last sequence alone is refused");
+        expect(refused(33, 33, 32), "paged: longer than max_len and capacity is refused");
+        expect(refused(32, 32, 31), "paged: longer than max_len is refused");
+        expect(refused(-1, 32, 32), "paged: a negative length is refused");
+        expect(refused(32, 32, -1), "paged: a negative max_len is refused");
+        expect(refused(32, 32, 32, 0), "paged: page size 0 is refused");
+        expect(!refused(32, 32, 32) && max_abs_diff(out.as<float>(), ref.data(), n) <= kTolKernel, "paged: works after a refusal");
+
+        auto refused_naive = [&](int l0, int l1, int max_len) {
+            lens.as<int>()[0] = l0, lens.as<int>()[1] = l1;
+            NaiveArgs a = w.naive_args(out);
+            a.seq_lens = &lens, a.max_len = max_len;
+            std::fill_n(out.as<float>(), n, NAN);
+            try {
+                run_naive(a);
+            } catch (const std::invalid_argument&) {
+                return std::all_of(out.as<float>(), out.as<float>() + n, [](float x) { return std::isnan(x); });
+            }
+            return false;
+        };
+        expect(!refused_naive(32, 32, 32) && max_abs_diff(out.as<float>(), ref.data(), n) <= kTolKernel, "naive: exactly max_len runs");
+        expect(refused_naive(32, 33, 32), "naive: max_len + 1 is refused");
+        expect(refused_naive(-1, 32, 32), "naive: a negative length is refused");
+    }
     // Empty sequences next to live ones, first, last and alone. Besides the reference, each kernel
     // must write exactly 0: the reference could be wrong the same way.
     const std::vector<std::vector<int>> batches = {{0, 1}, {1, 0}, {0, 16}, {17, 0}, {0, 65, 0}, {0}, {0, 0}};

@@ -1,0 +1,10 @@
+boundary_tests with the capacity checks, before the fix (build at 992f230 plus those checks), exit 1:
+FAIL paged: capacity + 1 is refused, whatever max_len says
+FAIL paged: capacity + 1 in the last sequence alone is refused
+FAIL paged: longer than max_len and capacity is refused
+FAIL paged: longer than max_len is refused
+FAIL paged: a negative length is refused
+FAIL paged: page size 0 is refused
+FAIL naive: max_len + 1 is refused
+FAIL naive: a negative length is refused
+2051 checks, 8 failed
