@@ -15,3 +15,5 @@ max |gpu - ref|: f32 storage 1.42e-06, f16 storage 1.19e-06, i8 storage 3.58e-07
 f16 storage vs fp32 data: worst error / derived bound = 0.087
 i8 storage vs fp32 data: worst error 0.00401, worst error / derived bound = 0.117
 846 checks, 0 failed
+build/boundary_tests || [ $? -eq 77 ]
+2051 checks, 0 failed

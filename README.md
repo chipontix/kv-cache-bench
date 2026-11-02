@@ -26,6 +26,7 @@ or other implementations; llama.cpp and MLX are only run, unmodified, as baselin
 |---|---|
 | The paged kernel matches an fp64 reference for fp32, fp16 and int8 storage | `make test`: 9 CPU tests, 846 GPU checks, 0 failed ([`results/make-test.txt`](results/make-test.txt)) |
 | The tests can tell a broken kernel from a correct one | `make mutation`: 10 injected bugs (4 of them in the int8 path), each caught ([`scripts/mutation.sh`](scripts/mutation.sh), [`results/mutation.txt`](results/mutation.txt)) |
+| Length boundaries hold: empty, 1, exactly a page, a partition or the capacity, one past them | `boundary_tests`, part of `make test`: 2051 checks, 0 failed; 9 boundary bugs injected, each caught, 7 of them invisible to `gpu_tests` ([Length boundaries](#length-boundaries)) |
 | fp16 storage stays within an error bound derived from fp16 rounding | `gpu_tests`, check `paged-f16-vs-f32-data`, worst error is 0.087 of the bound |
 | int8 storage stays within an error bound derived from its per-block scales | `gpu_tests`, check `paged-i8-vs-f32-data`, worst error is 0.117 of the bound |
 | Speed and effective bandwidth vs naive GPU and CPU, 512–32k tokens, pages 16–128 | [Numbers](#numbers), one run on a quiet machine, raw CSV in [`results/m4max-final/`](results/m4max-final/) |
@@ -35,7 +36,7 @@ or other implementations; llama.cpp and MLX are only run, unmodified, as baselin
 | The split-K partition size must follow the context length | [Partition sweep](#ablations): 1.9× at 512 tokens |
 
 CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) builds on a GitHub `macos-15` Apple
-silicon runner and runs both test binaries. The runner exposes an "Apple Paravirtual device",
+silicon runner and runs the test binaries. The runner exposes an "Apple Paravirtual device",
 and the GPU tests pass on it too
 ([`results/ci-log-excerpt.txt`](results/ci-log-excerpt.txt)). If a runner has no Metal device, `gpu_tests` prints `SKIP`
 and exits 77, which CTest reports as skipped. No performance number comes from CI.
@@ -50,6 +51,7 @@ run time from source embedded in the binary.
 make test             # build, CPU tests, GPU correctness grid
 make bench LABEL=me   # full sweep, writes results/me/
 make mutation         # inject bugs into the kernel, check the tests catch each
+make mutation-boundary   # the same for bugs at the length boundaries, against boundary_tests
 make bench-compare LABEL=me   # vs llama.cpp and MLX, writes results/me/compare.csv
 ```
 
@@ -84,7 +86,7 @@ flowchart LR
 | [`src/metal_attn.mm`](src/metal_attn.mm) | Metal host code: shader compilation per (head_dim, group, page, dtype), pipelines, buffers, timing |
 | [`src/reference.cpp`](src/reference.cpp) | fp64 CPU reference (two-pass softmax), block-table allocation |
 | [`src/workload.hpp`](src/workload.hpp) | test/benchmark data: contiguous and paged copies of the same cache |
-| [`tests/`](tests/) | `cpu_tests` (exact properties), `gpu_tests` (kernels vs reference over a grid) |
+| [`tests/`](tests/) | `cpu_tests` (exact properties), `gpu_tests` (kernels vs reference over a grid), `boundary_tests` (lengths at and next to every limit) |
 | [`bench/bench.cpp`](bench/bench.cpp) | the benchmark, CSV out; also `--accuracy` (error per storage type), `--chain` (timing used for the comparison), `--dump` (inputs for MLX) |
 | [`bench/vs_llamacpp.cpp`](bench/vs_llamacpp.cpp) | llama.cpp's `ggml_flash_attn_ext` on the same shape and data |
 | [`bench/vs_mlx.py`](bench/vs_mlx.py) | MLX's `mx.fast.scaled_dot_product_attention` on the same shape and data |
@@ -205,6 +207,30 @@ right measure.
    to the wrong block or head changes the output beyond the tolerance (two of the int8
    mutations test exactly that).
 
+## Length boundaries
+
+`boundary_tests` covers what the grid of `gpu_tests` does not reach: that grid has no length that is a
+multiple of a page or a partition, and no empty sequence. Each case below runs against the fp64 reference
+with the tolerance above, for fp32, fp16 and int8.
+
+| Boundary | Cases | Result |
+|---|---|---|
+| Page and block table | pages 1, 3, 16, 64; `k−1, k, k+1, 2k` as `{L, L+1}`, so one sequence fills its table exactly and the next opens a block with one token | no bug |
+| Split-K partition | auto, 1, 3, 4, 64 tokens (down to fewer tokens than simdgroups) at the same lengths; both sides of each `auto_part_tokens` threshold | no bug |
+| One block per sequence | `page = max_len` (the layout of `make bench-compare`), lengths 1–257 | no bug |
+| Naive threadgroup | lengths 255, 256, 257, 512, 513 | no bug |
+| Empty sequence | first, last, alone in the batch, whole batch empty | bug, fixed: NaN from the paged kernel and the reference |
+| Capacity + 1 | past `max_blocks · page_size`, past `max_len`, negative | bug, fixed: silently wrong answer |
+| The comparison itself | NaN on one or both sides | bug, fixed: every NaN was ignored |
+
+Defined behaviour now: an empty sequence attends to nothing and its output is exactly 0, as the naive kernels
+already did, also when the whole batch is empty. A length below 0, above `max_len` or above
+`max_blocks · page_size` makes `run_paged` / `run_naive` throw `std::invalid_argument` before a command
+buffer exists; exactly the capacity runs. Output of the failing tests before each fix:
+[`results/boundary-tests/`](results/boundary-tests/). `make mutation-boundary` injects 9 bugs at these
+boundaries, each caught by `boundary_tests`; `gpu_tests` still reports 0 failures for 7 of them
+([`results/boundary-tests/mutation.txt`](results/boundary-tests/mutation.txt)).
+
 ## Numbers
 
 **Hardware.** Apple M4 Max (MacBook Pro), 16 CPU cores (12 performance + 4 efficiency), 40-core
@@ -224,6 +250,8 @@ Blender at one core ([`env.txt`](results/m4max-final/env.txt)). Raw output:
 [`results/m4max-final/`](results/m4max-final/); tables rendered with `python3 scripts/tables.py
 m4max-final` and `python3 scripts/tables.py compare m4max-final`. Earlier sweeps
 (`results/m4max-run1..3`, commit `60449f7`) ran under load 24–26 and are kept but not cited.
+The length checks and the empty-sequence case were added after this run (2026-11-02) and it was not
+repeated: they add a few integer comparisons per step on the CPU and one per thread in `paged_reduce`.
 
 **Workload.** B = 2 sequences of equal length, H = 32 query heads, Hkv = 8 KV heads, D = 128
 (a Llama-3-8B-like layer), q ~ U(−3, 3), K, V ~ U(−1, 1). Every fp32 and fp16 paged and CPU result
@@ -521,6 +549,14 @@ per length.
    0.2% scale overhead instead of 6.25%. And this kernel does it on a paged cache, which neither
    library's op supports.
 
+11. **A test can pass because its comparison cannot fail.** `std::max(m, x)` returns `m` when `x` is NaN,
+    so the maximum error of a kernel that left NaN in its output came out small, and the `isnan` guard
+    after it never fired. A reduce kernel that writes no output at all passed all 846 checks of
+    `gpu_tests` on NaN-filled buffers. The ten mutations did not show it, since each of them produced
+    finite wrong numbers somewhere. Found on 2026-11-02 while writing the empty-sequence test, whose NaN
+    would have passed the same way. With a comparison that counts NaN as infinite, the kernel still
+    passes all 846 checks, so no output had a hidden NaN.
+
 ## Reproduce
 
 ```bash
@@ -546,6 +582,8 @@ footprint of the whole default sweep is 2.10 GB, 1.65 GB resident, at commit `f2
   96–100.5% of it at 32k (fp32), so it is a measured reference point, not a ceiling.
 - One machine. Absolute numbers are for an M4 Max with a 40-core GPU; other Apple GPUs have
   different bandwidth and core counts.
+- `run_paged` checks sequence lengths, not the block table's contents: a physical block id outside the
+  pool still reads out of bounds. mini-serve validates its ids before calling.
 - Decode only (one query token per sequence); no prefill, no causal mask, no ALiBi/RoPE, no
   sliding window. `D` is 64 or 128 only.
 - The cache flush before timed runs is best effort: Apple does not document the GPU cache
