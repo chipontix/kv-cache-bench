@@ -2,8 +2,11 @@
 // one past them. The grid of gpu_tests has no length that is a multiple of a page or a partition,
 // and no empty sequence. Exit code 77 (CTest "skipped") when there is no Metal device; the checks
 // that need no GPU have run by then.
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <string>
+#include <vector>
 
 #include "workload.hpp"
 
@@ -25,6 +28,51 @@ int finish() {
     return failed ? 1 : 0;
 }
 
+constexpr double kTolKernel = 2e-5;  // the tolerance of gpu_tests (README, "Tolerances")
+constexpr KvType kTypes[] = {KvType::f32, KvType::f16, KvType::i8};
+
+Workload make_workload(const Shape& shape, KvType type, std::vector<int> lens, uint64_t seed = 1) {
+    return Workload(shape, type, std::move(lens), seed, 3.0f, false, type == KvType::i8);
+}
+
+void expect_close(const float* got, const float* want, const Workload& w, const char* what, int page, int part) {
+    const double err = max_abs_diff(got, want, w.out_floats());
+    if (err <= kTolKernel) return expect(true, what);
+    std::string lens;
+    for (int l : w.lens) lens += std::to_string(l) + " ";
+    std::printf("  H=%d Hkv=%d D=%d %s lens=%spage=%d part=%d: err %.3g\n", w.shape.num_heads, w.shape.num_kv_heads,
+                w.shape.head_dim, name(w.type), lens.c_str(), page, part, err);
+    expect(false, what);
+}
+
+// The paged kernel (and, with a GQA shape, its per-query-head variant) against the fp64 reference.
+void check_paged(const Workload& w, int page, int part, bool contiguous = false) {
+    const size_t n = w.out_floats();
+    const PagedCache cache(w, page, uint64_t(page) * 1000 + part, contiguous);
+    std::vector<float> ref(n);
+    cache.reference(w, ref.data());
+    Buffer out(n * sizeof(float));
+    PagedArgs args = cache.args(w, part, out);
+    std::fill_n(out.as<float>(), n, NAN);
+    run_paged(args);
+    expect_close(out.as<float>(), ref.data(), w, contiguous ? "paged-contiguous" : "paged", cache.layout.page_size, part);
+    if (w.shape.group() == 1) return;
+    args.share_kv = false;
+    std::fill_n(out.as<float>(), n, NAN);
+    run_paged(args);
+    expect_close(out.as<float>(), ref.data(), w, "paged-per-head", cache.layout.page_size, part);
+}
+
+void check_naive(const Workload& w) {
+    const size_t n = w.out_floats();
+    std::vector<float> ref(n);
+    w.reference(ref.data());
+    Buffer out(n * sizeof(float));
+    std::fill_n(out.as<float>(), n, NAN);
+    run_naive(w.naive_args(out));
+    expect_close(out.as<float>(), ref.data(), w, "naive", 0, 0);
+}
+
 }  // namespace
 
 int main() {
@@ -34,5 +82,45 @@ int main() {
         expect(std::isinf(max_abs_diff(a, a, 3)), "max_abs_diff: NaN on both sides counts as infinite");
         expect(max_abs_diff(b, c, 3) == 0.5, "max_abs_diff: finite values");
     }
+    {  // auto_part_tokens: "at least 512 threadgroups" on both sides of each threshold, with 16
+       // (sequence, KV head) pairs, so 32 partitions; 64 is the floor and 512 the ceiling.
+        const Shape s{2, 32, 8, 128};
+        const int want[][2] = {{0, 64},      {1, 64},       {3968, 64},    {3969, 128},  {7936, 128},
+                               {7937, 256},  {15872, 256},  {15873, 512},  {1 << 20, 512}};
+        for (const auto& [len, part] : want) expect(auto_part_tokens(s, len) == part, "auto_part_tokens threshold");
+    }
+    if (!metal_available()) {
+        std::puts("SKIP: no Metal device on this machine, GPU boundary tests not run");
+        return failed ? 1 : 77;
+    }
+
+    const Shape shapes[] = {{1, 8, 2, 128}, {1, 4, 4, 64}};
+    // Every length next to a page (1, 3: not a power of two, and the shift-free path), a partition (1, 3, 4:
+    // no more tokens than simdgroups; 0: auto), or the simdgroup count, as {L, L + 1}: L = kP is a
+    // sequence that fills its block table exactly, L + 1 opens a block with one token.
+    for (const Shape& shape : shapes)
+        for (KvType type : kTypes)
+            for (int page : {1, 3, 16, 64})
+                for (int part : {0, 1, 3, 4, 64}) {
+                    const int K = part ? part : 64;
+                    std::vector<int> lens{1, 2, 3, 4, 5, page - 1, page, page + 1, 2 * page, K - 1, K, K + 1, 2 * K};
+                    std::sort(lens.begin(), lens.end());
+                    lens.erase(std::unique(lens.begin(), lens.end()), lens.end());
+                    for (int L : lens)
+                        if (L > 0) check_paged(make_workload(shape, type, {L, L + 1}), page, part);
+                }
+    // Partitions next to the threshold of auto_part_tokens, and the kernel using what it picks.
+    for (int L : {3968, 3969}) check_paged(make_workload({2, 8, 8, 128}, KvType::f16, {L, L}), 16, 0);
+    // One block per sequence (page = max_len, the layout of bench-compare), of any length.
+    for (const Shape& shape : shapes)
+        for (KvType type : kTypes)
+            for (int L : {1, 2, 16, 17, 64, 65, 256}) {
+                check_paged(make_workload(shape, type, {L}), L, 0, true);
+                check_paged(make_workload(shape, type, {L, L + 1}), L + 1, 64, true);
+            }
+    // The naive kernels work in threadgroups of 256 threads.
+    for (const Shape& shape : shapes)
+        for (KvType type : {KvType::f32, KvType::f16})
+            for (int L : {1, 2, 3, 4, 5, 255, 256, 257, 512, 513}) check_naive(make_workload(shape, type, {L, L + 1}));
     return finish();
 }
