@@ -2,7 +2,7 @@ no online-softmax rescale (corr = 1): 846 checks, 674 failed; max |gpu - ref|: f
 accumulator rounded to fp16 each step: 846 checks, 475 failed; max |gpu - ref|: f32 storage 0.00111, f16 storage 0.00122, i8 storage 0.00153 (tolerance 2e-05)
 off-by-one row inside a page: 846 checks, 624 failed; max |gpu - ref|: f32 storage 1.53, f16 storage 1.53, i8 storage 0.716 (tolerance 2e-05)
 simdgroup merge ignores max shift in L: 846 checks, 690 failed; max |gpu - ref|: f32 storage 0.866, f16 storage 0.866, i8 storage 0.598 (tolerance 2e-05)
-reduce drops the last partition: 846 checks, 354 failed; max |gpu - ref|: f32 storage 0.788, f16 storage 0.788, i8 storage 0.252 (tolerance 2e-05)
+reduce drops the last partition: 846 checks, 718 failed; max |gpu - ref|: f32 storage inf, f16 storage inf, i8 storage inf (tolerance 2e-05)
 block table ignored (logical = physical): 846 checks, 725 failed; max |gpu - ref|: f32 storage 1.99, f16 storage 1.99, i8 storage 1.31 (tolerance 2e-05)
 int8: K scale not applied: 846 checks, 306 failed; max |gpu - ref|: f32 storage 1.42e-06, f16 storage 1.19e-06, i8 storage 1.02 (tolerance 2e-05)
 int8: scale of KV head 0 for every head: 846 checks, 173 failed; max |gpu - ref|: f32 storage 1.42e-06, f16 storage 1.19e-06, i8 storage 0.411 (tolerance 2e-05)

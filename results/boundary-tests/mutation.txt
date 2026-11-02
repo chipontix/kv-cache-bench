@@ -1,0 +1,9 @@
+comparison ignores NaN: boundary_tests 2051 checks, 2 failed; gpu_tests 846 checks, 0 failed
+reduce never writes the output: boundary_tests 2051 checks, 1849 failed; gpu_tests 846 checks, 774 failed
+reduce takes one partition too many at an exact multiple: boundary_tests 2051 checks, 1115 failed; gpu_tests 846 checks, 0 failed
+reduce has no case for an empty sequence: boundary_tests 2051 checks, 243 failed; gpu_tests 846 checks, 0 failed
+reference has no case for an empty sequence: boundary_tests 2051 checks, 218 failed; gpu_tests 846 checks, 0 failed
+capacity + 1 accepted: boundary_tests 2051 checks, 2 failed; gpu_tests 846 checks, 0 failed
+exactly the capacity refused: boundary_tests libc++abi: terminating due to uncaught exception of type std::invalid_argument: sequence 1 has length 2, max_len 2, capacity 2; gpu_tests device: Apple M4 Max
+length past max_len accepted: boundary_tests 2051 checks, 1 failed; gpu_tests 846 checks, 0 failed
+auto_part_tokens threshold off by one: boundary_tests 2051 checks, 3 failed; gpu_tests 846 checks, 0 failed

@@ -1,7 +1,7 @@
 BUILD ?= build
 LABEL ?= local
 
-.PHONY: help build test bench bench-compare mutation clean
+.PHONY: help build test bench bench-compare mutation mutation-boundary clean
 help: ## list targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed 's/:.*## /\t/'
 
@@ -22,6 +22,9 @@ bench-compare: ## our kernel vs llama.cpp and MLX (both built/installed into bui
 
 mutation: build ## inject known bugs into the kernel and check that gpu_tests catches each one
 	./scripts/mutation.sh
+
+mutation-boundary: build ## inject bugs at the length boundaries and check that boundary_tests catches each one
+	./scripts/mutation.sh boundary
 
 clean: ## remove the build trees
 	rm -rf $(BUILD) build-cmp
