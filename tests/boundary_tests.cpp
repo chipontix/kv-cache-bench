@@ -89,6 +89,24 @@ int main() {
                                {7937, 256},  {15872, 256},  {15873, 512},  {1 << 20, 512}};
         for (const auto& [len, part] : want) expect(auto_part_tokens(s, len) == part, "auto_part_tokens threshold");
     }
+    {  // An empty sequence attends to nothing: its output is exactly 0 and its neighbour's is untouched.
+        const Shape s{3, 4, 2, 64};
+        const std::vector<int> lens{0, 9, 0}, alone{9};
+        const size_t nkv = size_t(3) * 2 * 9 * 64, nq = size_t(3) * 4 * 64, row = size_t(4) * 64;
+        std::vector<float> q(nq, 0.5f), k(nkv, 0.25f), v(nkv), out(nq, NAN), one(row);
+        for (size_t i = 0; i < nkv; ++i) v[i] = float(i % 7) / 7;
+        attention_reference<float>(s, lens, 9, q.data(), k.data(), v.data(), out.data(), 0.125f);
+        attention_reference<float>({1, 4, 2, 64}, alone, 9, q.data(), k.data() + size_t(2) * 9 * 64,
+                                   v.data() + size_t(2) * 9 * 64, one.data(), 0.125f);
+        const std::vector<float> zero(row, 0.0f);
+        expect(max_abs_diff(out.data(), zero.data(), row) == 0 && max_abs_diff(out.data() + 2 * row, zero.data(), row) == 0,
+               "reference: an empty sequence gives exactly 0");
+        expect(max_abs_diff(out.data() + row, one.data(), row) == 0, "reference: an empty neighbour changes nothing");
+        const PagedLayout L = make_paged_layout(lens, 16, 3), none = make_paged_layout(std::vector<int>{0, 0}, 16, 3);
+        expect(L.num_blocks == 1 && L.max_blocks == 1 && L.block_table[0] == -1 && L.block_table[1] == 0 && L.block_table[2] == -1,
+               "layout: an empty sequence takes no block");
+        expect(none.num_blocks == 0 && none.max_blocks == 0 && none.block_table.empty(), "layout: an all-empty batch has no blocks");
+    }
     if (!metal_available()) {
         std::puts("SKIP: no Metal device on this machine, GPU boundary tests not run");
         return failed ? 1 : 77;
@@ -122,5 +140,24 @@ int main() {
     for (const Shape& shape : shapes)
         for (KvType type : {KvType::f32, KvType::f16})
             for (int L : {1, 2, 3, 4, 5, 255, 256, 257, 512, 513}) check_naive(make_workload(shape, type, {L, L + 1}));
+    // Empty sequences next to live ones, first, last and alone. Besides the reference, each kernel
+    // must write exactly 0: the reference could be wrong the same way.
+    const std::vector<std::vector<int>> batches = {{0, 1}, {1, 0}, {0, 16}, {17, 0}, {0, 65, 0}, {0}, {0, 0}};
+    for (const Shape& shape : shapes)
+        for (KvType type : kTypes)
+            for (const std::vector<int>& lens : batches) {
+                const Workload w = make_workload(shape, type, lens);
+                for (int part : {0, 64}) check_paged(w, 16, part);
+                check_paged(w, 16, 64, true);
+                if (type != KvType::i8) check_naive(w);
+                const size_t n = w.out_floats(), row = size_t(shape.num_heads) * shape.head_dim;
+                const PagedCache cache(w, 16, 5);
+                Buffer out(n * sizeof(float));
+                std::fill_n(out.as<float>(), n, NAN);
+                run_paged(cache.args(w, 0, out));
+                const std::vector<float> zero(row, 0.0f);
+                for (size_t b = 0; b < lens.size(); ++b)
+                    if (lens[b] == 0) expect(max_abs_diff(out.as<float>() + b * row, zero.data(), row) == 0, "paged: an empty sequence gives exactly 0");
+            }
     return finish();
 }

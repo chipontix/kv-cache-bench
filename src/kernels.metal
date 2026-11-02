@@ -130,6 +130,10 @@ kernel void paged_reduce(device const float* part_out [[buffer(0)]],
                          uint d [[thread_index_in_threadgroup]]) {
     const int h = tg.x, b = tg.y, H = p.num_kv_heads * G;
     const int parts = (seq_lens[b] + p.part_tokens - 1) / p.part_tokens;
+    if (parts == 0) {  // an empty sequence attends to nothing; o / L below would be 0 / 0
+        out[(b * H + h) * D + d] = 0.0f;
+        return;
+    }
     const int base = (b * H + h) * p.max_parts;
     float M = NEG_BIG;
     for (int i = 0; i < parts; ++i) M = max(M, part_ml[base + i].x);

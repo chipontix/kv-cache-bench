@@ -81,7 +81,8 @@ void dequantize_paged_i8(const Shape& s, const PagedLayout& L, std::span<const i
 
 // out[b][h][d] = softmax_t(scale * q.k_t) . v_t over the contiguous cache. Accumulates in
 // fp64 with a two-pass softmax (max, then exp-sum), so its own error is far below the
-// tolerances the GPU kernels are tested against. q and out are [B][H][D].
+// tolerances the GPU kernels are tested against. q and out are [B][H][D]. An empty sequence attends
+// to nothing, so its output is 0.
 template <class T>
 void attention_reference(const Shape& s, std::span<const int> seq_lens, int max_len,
                          const float* q, const T* k, const T* v, float* out, float scale,

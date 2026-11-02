@@ -55,7 +55,7 @@ struct PagedArgs {
     KvType type = KvType::f32;
     int page_size = 16;
     int max_blocks = 0;      // PagedLayout::max_blocks
-    int max_len = 0;         // longest sequence, sizes the split-K workspace
+    int max_len = 0;         // longest sequence, sizes the split-K workspace; 0: all empty, out is 0
     int part_tokens = 0;     // split-K partition size, 0 = auto_part_tokens()
     const Buffer* q;         // float [B][H][D]
     const Buffer* k;         // type  [blocks][Hkv][page][D]

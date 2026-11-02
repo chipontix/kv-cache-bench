@@ -86,7 +86,7 @@ void attention_reference(const Shape& s, std::span<const int> seq_lens, int max_
             const T* vr = v + contig_index(s, max_len, b, kvh, t, 0);
             for (int d = 0; d < D; ++d) acc[d] += p[t] * double(vr[d]);
         }
-        for (int d = 0; d < D; ++d) out[size_t(row) * D + d] = float(acc[d] / sum);
+        for (int d = 0; d < D; ++d) out[size_t(row) * D + d] = len ? float(acc[d] / sum) : 0.0f;
     };
 
     threads = std::clamp(threads, 1, rows);

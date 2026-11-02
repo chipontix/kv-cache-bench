@@ -96,7 +96,7 @@ struct PagedCache {
 
     PagedCache(const Workload& w, int page_size, uint64_t seed, bool contiguous = false) {
         if (contiguous) {
-            layout = {w.max_len, 1, w.shape.batch, {}};
+            layout = {std::max(w.max_len, 1), 1, w.shape.batch, {}};
             for (int b = 0; b < w.shape.batch; ++b) layout.block_table.push_back(b);
         } else {
             layout = make_paged_layout(w.lens, page_size, seed);

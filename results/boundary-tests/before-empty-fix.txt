@@ -1,0 +1,9 @@
+boundary_tests with the empty-sequence checks, before the fix (build at 0e8f099 plus those checks).
+It aborted with exit 134 on the all-empty batch {0}, after these failures:
+   5 FAIL naive
+  10 FAIL paged
+   5 FAIL paged-contiguous
+  15 FAIL paged-per-head
+   6 FAIL paged: an empty sequence gives exactly 0
+   1 FAIL reference: an empty sequence gives exactly 0
+libc++abi: terminating due to uncaught exception of type std::invalid_argument: part_tokens < 0 or max_len <= 0

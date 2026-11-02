@@ -2,6 +2,7 @@
 
 #include "metal_attn.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <map>
 #include <memory>
@@ -144,10 +145,10 @@ Buffer::~Buffer() {
 // Encodes one decode step (paged_decode, then paged_reduce) into `e`.
 void encode_paged(id<MTLComputeCommandEncoder> e, const PagedArgs& a) {
     const Shape& s = a.shape;
-    if (a.part_tokens < 0 || a.max_len <= 0) throw std::invalid_argument("part_tokens < 0 or max_len <= 0");
+    if (a.part_tokens < 0 || a.max_len < 0) throw std::invalid_argument("part_tokens < 0 or max_len < 0");
     if (a.type == KvType::i8 && (!a.k_scale || !a.v_scale)) throw std::invalid_argument("i8 cache without scales");
     const int part_tokens = a.part_tokens ? a.part_tokens : auto_part_tokens(s, a.max_len);
-    const int max_parts = (a.max_len + part_tokens - 1) / part_tokens;
+    const int max_parts = std::max(1, (a.max_len + part_tokens - 1) / part_tokens);  // at least 1: no empty dispatch
     const size_t slots = size_t(s.batch) * s.num_heads * max_parts;
     const Buffer& part_out = workspace(0, slots * s.head_dim * sizeof(float));
     const Buffer& part_ml = workspace(1, slots * 2 * sizeof(float));
@@ -212,7 +213,7 @@ double run_naive(const NaiveArgs& a) {
         [e setBuffer:mtl(a.seq_lens) offset:0 atIndex:2];
         [e setBuffer:mtl(&scores) offset:0 atIndex:3];
         [e setBytes:&prm length:sizeof prm atIndex:4];
-        [e dispatchThreads:MTLSizeMake(a.max_len, s.num_heads, s.batch) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+        [e dispatchThreads:MTLSizeMake(std::max(a.max_len, 1), s.num_heads, s.batch) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
         [e setComputePipelineState:ps_softmax];
         [e setBuffer:mtl(&scores) offset:0 atIndex:0];
         [e setBuffer:mtl(a.seq_lens) offset:0 atIndex:1];
