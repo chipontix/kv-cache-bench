@@ -556,6 +556,20 @@ per length.
     finite wrong numbers somewhere. Found on 2026-11-02 while writing the empty-sequence test, whose NaN
     would have passed the same way. With a comparison that counts NaN as infinite, the kernel still
     passes all 846 checks, so no output had a hidden NaN.
+12. **This Mac gives no GPU counters, so the int8 profile cannot name the cause of finding 9.**
+    `make profile` (2026-11-03, 19:29–19:32 +03, load 7.7–10.7, not below 8 for the whole run, so
+    it compares int8 with fp16 only and is not a measurement:
+    [`results/int8-profile/`](results/int8-profile/), `load.txt`) asked for counters two ways. The
+    Metal API lists one counter set, `timestamp`. xctrace 27.0's Metal System Trace, with each of
+    the 7 values of its counter-profile option, records one counter, "RT Unit Active", which is
+    always 0 for this kernel (`counters.txt`). No occupancy, bandwidth or limiter counters, so no
+    reading of why int8 is not bound by bytes. What the trace does give is GPU time per kernel
+    dispatch, sampled: at 32k tokens in fp16, `paged_decode` takes 96% of the step (median 649 µs
+    over 19 dispatches) and `paged_reduce` 2.6% (20 µs), so the split-K reduce is not where time
+    goes. For int8 the sampler caught only the first 3 dispatches of the run, which are cold
+    (fp16's first ones are ~1.3 ms too, before settling at ~650 µs), so it gives no warm int8
+    split; at 4096 and 512 tokens it caught 0–3 dispatches. kvbench's own timing was the same with
+    and without the profiler (`plain.csv` against each `kvbench.csv`).
 
 ## Reproduce
 
@@ -564,6 +578,7 @@ make bench LABEL=mine   # writes results/mine/{env.txt,bw.csv,bench.csv,parts.cs
 ./build/kvbench --lens=4096 --pages=16 --types=f16 --reps=50   # one point; flags are listed in bench/bench.cpp
 python3 scripts/tables.py mine   # the markdown tables of the Numbers section, from results/mine/
 python3 scripts/tables.py mine other   # run-to-run spread between two labels
+make profile   # xctrace, f16 vs i8: GPU counters available, per-kernel GPU time -> results/int8-profile/
 ```
 
 `env.txt` records the machine (chip, cores, memory, GPU cores from `system_profiler
@@ -599,7 +614,8 @@ footprint of the whole default sweep is 2.10 GB, 1.65 GB resident, at commit `f2
 - int8 reaches clearly less effective bandwidth than fp16 and its cause is not found: four kernel
   variants tried under load gave no gain and were not kept
   ([`results/int8-experiments/notes.txt`](results/int8-experiments/notes.txt)). A profiler run
-  (GPU counters) would be the next step.
+  did not help either: this Mac exposes no GPU counters to the Metal API or xctrace (finding 12);
+  Instruments' GUI counter sets were not tried.
 - The comparison covers one op on one shape and one machine, with a warm cache and a contiguous
   layout for llama.cpp and MLX, at fixed versions (llama.cpp `b12000`, MLX 0.32.4). It says
   nothing about end-to-end tokens per second, other head sizes or batch sizes, prefill, or newer

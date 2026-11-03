@@ -1,0 +1,10 @@
+MTLDevice.counterSets:
+  timestamp: GPUTimestamp
+xctrace Metal System Trace, GPU counters recorded per counterprofile option value:
+  0: RT Unit Active
+  1: RT Unit Active
+  2: RT Unit Active
+  3: RT Unit Active
+  4: RT Unit Active
+  5: RT Unit Active
+  6: RT Unit Active

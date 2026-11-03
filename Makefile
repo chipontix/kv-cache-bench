@@ -1,7 +1,7 @@
 BUILD ?= build
 LABEL ?= local
 
-.PHONY: help build test bench bench-compare mutation mutation-boundary clean
+.PHONY: help build test bench bench-compare profile mutation mutation-boundary clean
 help: ## list targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed 's/:.*## /\t/'
 
@@ -19,6 +19,9 @@ bench: build ## full sweep on this machine, writes results/$(LABEL)/
 
 bench-compare: ## our kernel vs llama.cpp and MLX (both built/installed into build-cmp/), writes results/$(LABEL)/compare.csv
 	./scripts/compare.sh $(LABEL)
+
+profile: build ## xctrace profile of the paged kernel, f16 vs i8: per-kernel GPU time and available GPU counters, writes results/int8-profile/
+	./scripts/profile.sh
 
 mutation: build ## inject known bugs into the kernel and check that gpu_tests catches each one
 	./scripts/mutation.sh

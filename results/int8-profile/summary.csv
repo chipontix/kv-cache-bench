@@ -1,0 +1,9 @@
+dtype,seq_len,kernel,samples,median_us,min_us,max_us,median_pct_of_kick,gpu_counters_recorded,other_process_gpu_ms,kvbench_gpu_ms
+f16,32768,paged_decode,19,648.6,641.9,1393.4,96.3,RT Unit Active,38.0,46.8
+f16,32768,paged_reduce,25,19.8,14.8,54.5,2.6,RT Unit Active,38.0,46.8
+i8,32768,paged_decode,3,1658.3,1651.2,1799.6,88.2,RT Unit Active,43.2,44.7
+i8,32768,paged_reduce,3,60.6,54.0,60.9,3.2,RT Unit Active,43.2,44.7
+i8,4096,paged_decode,1,245.3,245.3,245.3,81.6,RT Unit Active,24.9,25.7
+i8,4096,paged_reduce,3,27.9,26.7,30.9,9.3,RT Unit Active,24.9,25.7
+i8,512,paged_decode,2,43.1,43.0,43.1,59.4,RT Unit Active,23.7,21.5
+i8,512,paged_reduce,3,12.1,6.8,12.7,17.3,RT Unit Active,23.7,21.5

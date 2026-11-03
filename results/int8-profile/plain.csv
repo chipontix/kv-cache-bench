@@ -1,0 +1,8 @@
+# device=Apple M4 Max batch=2 heads=32 kv_heads=8 head_dim=128 reps=30 warmup=3 cpu_reps=3 cpu_threads=16 flush=1 simdgroups=4 timing=pipelined
+impl,dtype,batch,seq_len,page,part,reps,median_us,min_us,max_us,gbps,max_diff_vs_naive,kv_bytes
+gpu_paged,f16,2,512,16,64,30,53.44,40.13,75.58,79.7,nan,4194304
+gpu_paged,i8,2,512,16,64,30,33.92,31.29,34.92,63.8,nan,2101248
+gpu_paged,f16,2,4096,16,128,30,161.25,157.25,168.75,208.5,nan,33554432
+gpu_paged,i8,2,4096,16,128,30,109.38,103.58,111.67,154.0,nan,16809984
+gpu_paged,f16,2,32768,16,512,30,665.02,654.38,903.46,403.7,nan,268435456
+gpu_paged,i8,2,32768,16,512,30,479.46,473.25,531.50,280.1,nan,134479872
