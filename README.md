@@ -444,7 +444,7 @@ caches) show more than DRAM bandwidth; the two methods are not mixed in any tabl
 
 A ratio above 1× means this kernel (paged 16) is faster. Each point is one chain median from one
 run, so differences of a few percent are within noise: the same kernel on its two layouts differs
-by −17% to +9%, and by at most 2.2% at 15 of the 21 points.
+by −17% to +9%, and by at most 2.2% at 14 of the 21 points.
 
 ## Ablations
 
@@ -482,6 +482,12 @@ per length.
 | f16 | 32k | 655.8 | 753.3 | 1.15× | 409 / 356 |
 
 ## Findings
+
+In short: the paged kernel is bound by memory at long context (2, 3) and by parallelism at short
+context (4, 5); int8 is faster than fp16 but not by its byte ratio, and why is still open (9, 12);
+against llama.cpp and MLX it leads in fp32 and int8 and is level in fp16 (10). The rest is about
+measuring and testing honestly: how to time a GPU (1), how to pick and check a tolerance (8, 11),
+what did not help (6), and a leak (7).
 
 1. **Measuring the GPU one run at a time measured the power state, not the kernel.** With the first
    method (commit, wait, read `GPUEndTime − GPUStartTime`, repeat), the same binary at the same point
@@ -541,14 +547,13 @@ per length.
    128-token pages lose more than 16-token ones (5.41e-5 vs 3.57e-5 at 32k), because one scale then
    covers more different magnitudes.
 10. **Against llama.cpp and MLX: ahead in fp32 and int8, level to slightly behind in fp16.** In fp16,
-   the common case, llama.cpp is 4–19% faster than this kernel from 1k to 32k tokens (0.81–0.96×),
+   the common case, llama.cpp takes 4–19% less time than this kernel from 1k to 32k tokens (0.81–0.96×),
    MLX is between 0.88× and 1.09×, and at 512 tokens this kernel is the fastest (15.3 µs vs 17.4 and
    21.1). In fp32 this kernel is 1.25–2.58× faster than llama.cpp and 1.09–2.46× faster than MLX:
    their f32 paths fall to 177 and 186 GB/s at 32k, while this kernel keeps 457. int8 is
    1.06–1.46× faster than llama.cpp's `q8_0` at a similar worst error (8.80e-4 vs 8.50e-4), with a
    0.2% scale overhead instead of 6.25%. And this kernel does it on a paged cache, which neither
    library's op supports.
-
 11. **A test can pass because its comparison cannot fail.** `std::max(m, x)` returns `m` when `x` is NaN,
     so the maximum error of a kernel that left NaN in its output came out small, and the `isnan` guard
     after it never fired. A reduce kernel that writes no output at all passed all 846 checks of
@@ -557,19 +562,20 @@ per length.
     would have passed the same way. With a comparison that counts NaN as infinite, the kernel still
     passes all 846 checks, so no output had a hidden NaN.
 12. **This Mac gives no GPU counters, so the int8 profile cannot name the cause of finding 9.**
-    `make profile` (2026-11-03, 19:29–19:32 +03, load 7.7–10.7, not below 8 for the whole run, so
+    `make profile` (2026-11-03, 19:29–19:32 +03, load 7.7–10.7, above 8 from the second minute on, so
     it compares int8 with fp16 only and is not a measurement:
     [`results/int8-profile/`](results/int8-profile/), `load.txt`) asked for counters two ways. The
     Metal API lists one counter set, `timestamp`. xctrace 27.0's Metal System Trace, with each of
-    the 7 values of its counter-profile option, records one counter, "RT Unit Active", which is
-    always 0 for this kernel (`counters.txt`). No occupancy, bandwidth or limiter counters, so no
-    reading of why int8 is not bound by bytes. What the trace does give is GPU time per kernel
+    the 7 values of its counter-profile option, records one counter, "RT Unit Active", the
+    ray-tracing unit, which this kernel does not use (`counters.txt`). No occupancy, bandwidth or
+    limiter counters, so no reading of why int8 is not bound by bytes. What the trace does give is GPU time per kernel
     dispatch, sampled: at 32k tokens in fp16, `paged_decode` takes 96% of the step (median 649 µs
     over 19 dispatches) and `paged_reduce` 2.6% (20 µs), so the split-K reduce is not where time
     goes. For int8 the sampler caught only the first 3 dispatches of the run, which are cold
     (fp16's first ones are ~1.3 ms too, before settling at ~650 µs), so it gives no warm int8
-    split; at 4096 and 512 tokens it caught 0–3 dispatches. kvbench's own timing was the same with
-    and without the profiler (`plain.csv` against each `kvbench.csv`).
+    split; at 4096 and 512 tokens it caught 0–3 dispatches. Under the profiler kvbench's medians
+    were 1% faster to 31% slower than without it (`plain.csv` against each `kvbench.csv`; within 2%
+    at 32k, the most at 512 tokens), so the profiled runs are not timings either.
 
 ## Reproduce
 
